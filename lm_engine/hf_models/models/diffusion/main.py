@@ -20,7 +20,6 @@ from .config import DiffusionConfig
 
 # from .base import PreTrainedModelMixin
 
-
 class DiffusionMaskedLM(DiffusionPreTrainedModel):
     def __init__(self, config: DiffusionConfig, **kwargs) -> DiffusionPreTrainedModel:
         if "mask_token_id" in kwargs:
@@ -71,6 +70,7 @@ class DiffusionMaskedLM(DiffusionPreTrainedModel):
         max_seqlen: int | None = None,
         reduction: str = "mean",
         masked_indices: torch.Tensor | None = None,
+        causal_hybrid : bool | None = None ,
     ) -> CausalLMOutputWithPast:
         assert return_dict
         assert inputs_embeds is None
@@ -96,6 +96,8 @@ class DiffusionMaskedLM(DiffusionPreTrainedModel):
         # ==========================================================================================
         clear_aux_loss()
 
+
+        # print(f"CAUSAL : :: : : : :  {causal_hybrid}")
         transformer_outputs: BaseModelOutputWithPast = self.transformer(
             input_ids,
             past_key_values=past_key_values,
@@ -104,6 +106,7 @@ class DiffusionMaskedLM(DiffusionPreTrainedModel):
             use_cache=use_cache,
             cu_seqlens=cu_seqlens,
             max_seqlen=max_seqlen,
+            causal_hybrid = causal_hybrid
         )
 
         hidden_states = transformer_outputs.last_hidden_state

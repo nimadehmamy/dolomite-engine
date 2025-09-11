@@ -127,7 +127,8 @@ class ModelWrapper(nn.Module):
 
         self.tie_word_embeddings = self.config.tie_word_embeddings
         self.router_aux_loss_coef = getattr(self.config, "router_aux_loss_coef", None)
-
+        self.diff_loss_weight = getattr(self.config, "diff_loss_weight" ,None)
+        
         log_rank_0(logging.INFO, self.config)
 
     def _setup_tokenizer(self) -> None:

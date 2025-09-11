@@ -138,6 +138,7 @@ class BaseModelMixin(PreTrainedModelMixin):
         use_cache: bool | None = None,
         cu_seqlens: torch.Tensor | None = None,
         max_seqlen: int | None = None,
+        causal_hybrid : bool | None = None , 
     ) -> BaseModelOutputWithPast:
         (
             use_cache,
@@ -187,6 +188,7 @@ class BaseModelMixin(PreTrainedModelMixin):
                 rope_cos_sin=rope_cos_sin,
                 cu_seqlens=cu_seqlens,
                 max_seqlen=max_seqlen,
+                causal_hybrid =causal_hybrid
             )
 
         hidden_states = self.ln_f(hidden_states)

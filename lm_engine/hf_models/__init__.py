@@ -15,6 +15,7 @@ from .models import (
     GPTCrossLayerConfig,
     GPTCrossLayerForCausalLM,
     GPTCrossLayerModel,
+    DiffusionModel,
     LadderResidualConfig,
     LadderResidualForCausalLM,
     LadderResidualForCausalLM_TP,

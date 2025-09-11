@@ -139,7 +139,10 @@ class Attention(nn.Module):
         rope_cos_sin: torch.Tensor | None = None,
         cu_seqlens: torch.Tensor | None = None,
         max_seqlen: int | None = None,
+        causal_hybrid : bool | None = None, 
     ) -> torch.Tensor:
+
+
         use_flash_attention_2 = is_kernel_allowed(Kernel.flash_attention_2)
         use_flash_attention_3 = is_kernel_allowed(Kernel.flash_attention_3)
 
@@ -201,7 +204,7 @@ class Attention(nn.Module):
                 max_seqlen=max_seqlen,
                 attention_mask=attention_mask,
                 use_padding_free_transformer=self.use_padding_free_transformer,
-                causal=self.causal,
+                causal=self.causal if causal_hybrid is None else causal_hybrid,
                 dropout=self.softmax_dropout_p if self.training else 0,
                 softmax_scale=self.attention_multiplier,
             )
@@ -217,7 +220,7 @@ class Attention(nn.Module):
                 value,
                 attn_mask=attention_mask,
                 dropout_p=self.softmax_dropout_p if self.training else 0,
-                is_causal=self.causal if attention_mask is None else False,
+                is_causal = (self.causal if causal_hybrid is None else causal_hybrid) if attention_mask is None else False,
                 scale=self.attention_multiplier,
                 enable_gqa=True,
             )

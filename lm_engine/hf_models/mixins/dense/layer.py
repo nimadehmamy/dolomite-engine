@@ -10,6 +10,8 @@ import torch.nn as nn
 from ...cache import GenerationCache
 from ...config import CommonConfig
 from ...modeling_utils import get_mlp_block, get_normalization_function, get_sequence_mixer
+from ....utils import log_metrics
+import logging
 
 
 class Block(nn.Module):
@@ -43,6 +45,8 @@ class Block(nn.Module):
         rope_cos_sin: torch.Tensor | None = None,
         cu_seqlens: torch.Tensor | None = None,
         max_seqlen: int | None = None,
+        causal_hybrid : bool | None = None , 
+        
     ) -> torch.Tensor:
         residual = hidden_states
         hidden_states = self.ln_1(hidden_states)
@@ -54,6 +58,8 @@ class Block(nn.Module):
             rope_cos_sin=rope_cos_sin,
             cu_seqlens=cu_seqlens,
             max_seqlen=max_seqlen,
+            causal_hybrid = causal_hybrid , 
+
         )
 
         if self.m_residual is not None:
@@ -81,8 +87,21 @@ class Block(nn.Module):
         rope_cos_sin: torch.Tensor | None = None,
         cu_seqlens: torch.Tensor | None = None,
         max_seqlen: int | None = None,
+        causal_hybrid : bool | None = None , 
+
     ) -> torch.Tensor:
-        if self.sequence_mixer_type in ["softmax_attention", "stickbreaking_attention", "multihead_latent_attention"]:
+        # causal_hybrid
+        if self.sequence_mixer_type=="softmax_attention":
+            hidden_states = self.sequence_mixer(
+                hidden_states,
+                past_key_values=past_key_values,
+                attention_mask=attention_mask,
+                rope_cos_sin=rope_cos_sin,
+                cu_seqlens=cu_seqlens,
+                max_seqlen=max_seqlen,
+                causal_hybrid = causal_hybrid , 
+            )
+        elif self.sequence_mixer_type in ["stickbreaking_attention", "multihead_latent_attention"]:
             hidden_states = self.sequence_mixer(
                 hidden_states,
                 past_key_values=past_key_values,
