@@ -37,6 +37,7 @@ class TuningMethod(Enum):
     full_finetuning = "full_finetuning"
     distillation = "distillation"
     pretraining_diffusion_v2 ="pretraining_diffusion_v2"
+    pretraining_diffusion_v3 ="pretraining_diffusion_v3"
 
 
 class LossMask(Enum):

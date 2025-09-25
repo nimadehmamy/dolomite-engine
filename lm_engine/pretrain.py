@@ -151,6 +151,7 @@ def train_step_without_pipeline_parallel(
     sync_every_gradient_accumulation_step: bool,
     lm_loss_multiplier: float,
     tuning_method: TuningMethod,
+    global_step,
 ) -> MetricsTrackingDict:
     """runs backpropagation and applies the gradient if at the edge of gradient accumulation boundary
 
@@ -201,7 +202,7 @@ def train_step_without_pipeline_parallel(
         for step in range(gradient_accumulation_steps - 1):
             batch = get_next_batch(train_dataloader) if batches is None else batches[step]
             with forward_context():
-                loss_micro_step_dict = model(batch, lm_loss_multiplier=lm_loss_multiplier)
+                loss_micro_step_dict = model(batch, lm_loss_multiplier=lm_loss_multiplier,global_step=global_step)
 
             # compute gradients
             with backward_context():
@@ -216,7 +217,7 @@ def train_step_without_pipeline_parallel(
 
     batch = get_next_batch(train_dataloader) if batches is None else batches[-1]
     with forward_context():
-        loss_micro_step_dict = model(batch, lm_loss_multiplier=lm_loss_multiplier)
+        loss_micro_step_dict = model(batch, lm_loss_multiplier=lm_loss_multiplier,global_step=global_step)
 
     # compute gradients
     with backward_context():
@@ -409,6 +410,7 @@ def train(
                 sync_every_gradient_accumulation_step=args.distributed_args.sync_every_gradient_accumulation_step,
                 lm_loss_multiplier=1 / (micro_batch_size * sequence_length),
                 tuning_method=args.tuning_args.tuning_method,
+                global_step = global_step
             )
 
         metrics_tracker = metrics_tracker + loss_step_dict
@@ -578,7 +580,8 @@ def main(args_class: type[DistillationArgs | TrainingArgs] = TrainingArgs) -> No
         assert (
             args.tuning_args.tuning_method == TuningMethod.pretraining or
             args.tuning_args.tuning_method == TuningMethod.pretraining_diffusion or 
-            args.tuning_args.tuning_method == TuningMethod.pretraining_diffusion_v2
+            args.tuning_args.tuning_method == TuningMethod.pretraining_diffusion_v2 or 
+            args.tuning_args.tuning_method == TuningMethod.pretraining_diffusion_v3
 
         ), f"unexpected tuning method ({args.tuning_args.tuning_method})"
     elif args_class == DistillationArgs:
