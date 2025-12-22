@@ -77,11 +77,14 @@ def flash_attention(
         assert use_flash_attention_3 or use_flash_attention_2
 
     window_size = (-1, -1)
-    if sliding_window is not None and key.size(1) > sliding_window:
+    # if sliding_window is not None and key.size(1) > sliding_window:
+    #     window_size = (sliding_window, sliding_window)
+
+    if sliding_window is not None:
         window_size = (sliding_window, sliding_window)
 
     if use_padding_free_transformer:
-        assert sliding_window is None
+        # assert sliding_window is None
 
         if use_flash_attention_3:
             attn_output, _ = flash_attention_3_varlen(
@@ -107,6 +110,8 @@ def flash_attention(
                 dropout_p=dropout,
                 softmax_scale=softmax_scale,
                 causal=causal,
+                window_size=window_size,
+
             )
     else:
         if attention_mask is None:

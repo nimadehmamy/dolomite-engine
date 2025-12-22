@@ -35,6 +35,11 @@ class PreTrainedModelMixin(PreTrainedModel):
     def __init__(self, config: CommonConfig, *args, **kwargs) -> PreTrainedModelMixin:
         super().__init__(config, *args, **kwargs)
 
+        self.num_pre_layers = config.num_pre_layers  # 8
+        self.num_post_layers = config.num_post_layers  # 8
+        self.num_iterations = config.num_iterations  # 1
+        
+        
         assert self.config_class is not None
         self.generation_config = GenerationConfig.from_model_config(self.config)
 
@@ -163,7 +168,25 @@ class BaseModelMixin(PreTrainedModelMixin):
         mamba_mask = None
         mamba_mask_computed = False
 
-        for sequence_mixer_type, block in zip(self.sequence_mixer_block_types, self.h):
+        # for sequence_mixer_type, block in zip(self.sequence_mixer_block_types, self.h):
+
+
+
+        num_layers = len(self.h)
+        layer_idxs = list(range(num_layers))
+        num_pre_layers = self.num_pre_layers
+        num_post_layers = self.num_post_layers
+        num_iterations = self.num_iterations
+        layer_idxs = (
+            layer_idxs[:num_pre_layers]
+            + num_iterations * layer_idxs[num_pre_layers:-num_post_layers]
+            + layer_idxs[-num_post_layers:]
+        )
+        for i in layer_idxs:
+            sequence_mixer_type = self.sequence_mixer_block_types[i]
+            block = self.h[i]
+
+            
             is_linear_layer = sequence_mixer_type in ["mamba2", "rnn", "gru"]
 
             if is_linear_layer and not mamba_mask_computed:

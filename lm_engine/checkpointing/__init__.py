@@ -260,7 +260,12 @@ def load_checkpoint_for_training(
             if load_optimizer:
                 saver = _OptimizerSaver(model_container, optimizer_container)
                 state_dict = {"state": saver.state_dict()}
-                dcp.load(state_dict, checkpoint_id=_get_optimizer_path(load_path))
+                # dcp.load(state_dict, checkpoint_id=_get_optimizer_path(load_path))
+                dcp.load(
+                state_dict,
+                checkpoint_id=_get_optimizer_path(load_path),
+                planner=dcp.DefaultLoadPlanner(allow_partial_load=True),
+            )
                 saver.load_state_dict(state_dict["state"])
 
         del saver, state_dict
@@ -297,7 +302,7 @@ def load_checkpoint_for_training(
         random.setstate(rng_state["random_rng_state"])
         np.random.set_state(rng_state["np_rng_state"])
         torch.set_rng_state(rng_state["torch_rng_state"])
-        Accelerator.set_rng_state(rng_state["accelerator_rng_state"])
+        # Accelerator.set_rng_state(rng_state["accelerator_rng_state"])
 
     metadata = json.load(open(_get_metadata_path(load_path), "r"))
 
