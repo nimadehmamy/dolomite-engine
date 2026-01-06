@@ -126,6 +126,7 @@ def flash_attention(
                     softcap=softcap,
                 )
             else:
+
                 attn_output = flash_attention_2(
                     q=query,
                     k=key,

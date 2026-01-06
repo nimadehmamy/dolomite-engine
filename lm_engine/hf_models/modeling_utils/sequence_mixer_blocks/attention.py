@@ -150,6 +150,7 @@ class Attention(nn.Module):
         rope_cos_sin: torch.Tensor | None = None,
         cu_seqlens: torch.Tensor | None = None,
         max_seqlen: int | None = None,
+        layer_id: int | None = None,
     ) -> torch.Tensor:
         use_flash_attention_2 = is_kernel_allowed(Kernel.flash_attention_2)
         use_flash_attention_3 = is_kernel_allowed(Kernel.flash_attention_3)
@@ -191,7 +192,10 @@ class Attention(nn.Module):
             key = apply_rotary_pos_emb(key, rope_cos_sin)
 
         if past_key_values is not None:
-            key, value = past_key_values.update(key_states=key, value_states=value, layer_idx=self.layer_idx)
+            # key, value = past_key_values.update(key_states=key, value_states=value, layer_idx=self.layer_idx)
+            key, value = past_key_values.update(key_states=key, value_states=value, layer_idx=self.layer_idx if layer_id is None else layer_id)
+
+
 
         if use_flash_attention_2 or use_flash_attention_3:
             assert accelerator == Accelerator.cuda

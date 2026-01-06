@@ -254,7 +254,12 @@ def load_checkpoint_for_training(
         else:
             saver = _ModelSaver(model_container)
             state_dict = {"state": saver.state_dict()}
-            dcp.load(state_dict, checkpoint_id=_get_model_path(load_path))
+            # dcp.load(state_dict, checkpoint_id=_get_model_path(load_path))
+            dcp.load(
+                state_dict,
+                checkpoint_id=_get_model_path(load_path),
+                planner=dcp.DefaultLoadPlanner(allow_partial_load=True),
+            )
             saver.load_state_dict(state_dict["state"])
 
             if load_optimizer:
@@ -340,8 +345,8 @@ def load_checkpoint_and_unshard(args: UnshardingArgs) -> tuple[ModelWrapper, Tra
     args_from_checkpoint = load_yaml(args_file)
     metadata = json.load(open(_get_metadata_path(_get_base_path(load_path, iteration)), "r"))
 
-    accelerator = Accelerator(metadata["accelerator"])
-
+    # accelerator = Accelerator(metadata["accelerator"])
+    accelerator = Accelerator.cuda
     # turn off distillation for unsharding
     if "teacher_args" in args_from_checkpoint:
         args_from_checkpoint["tuning_args"]["tuning_method"] = "pretraining"
