@@ -196,7 +196,6 @@ class Attention(nn.Module):
             key, value = past_key_values.update(key_states=key, value_states=value, layer_idx=self.layer_idx if layer_id is None else layer_id)
 
 
-
         if use_flash_attention_2 or use_flash_attention_3:
             assert accelerator == Accelerator.cuda
 
@@ -212,6 +211,7 @@ class Attention(nn.Module):
             query = wait_for_ACT(query, wait_in_forward=True, wait_in_backward=False)
             key = wait_for_ACT(key, wait_in_forward=True, wait_in_backward=False)
             value = wait_for_ACT(value, wait_in_forward=True, wait_in_backward=False)
+
 
             hidden_states = flash_attention(
                 query=query,
