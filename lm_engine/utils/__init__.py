@@ -20,6 +20,7 @@ from .packages import (
     is_fla_available,
     is_flash_attention_2_available,
     is_flash_attention_3_available,
+    is_flex_attention_available,
     is_mamba_2_ssm_available,
     is_multi_storage_client_available,
     is_ray_available,

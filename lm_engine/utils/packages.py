@@ -207,3 +207,11 @@ except ImportError:
 
 def is_fla_available() -> bool:
     return _IS_FLA_AVAILABLE
+
+
+def is_flex_attention_available() -> bool:
+    try:
+        from torch.nn.attention.flex_attention import flex_attention
+        return True
+    except ImportError:
+        return False

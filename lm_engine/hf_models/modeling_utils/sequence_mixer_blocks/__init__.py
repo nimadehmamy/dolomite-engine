@@ -172,6 +172,7 @@ def get_sequence_mixer(
                 qkv_bias=block.qkv_bias,
                 softmax_dropout=block.softmax_dropout,
                 use_padding_free_transformer=use_padding_free_transformer,
+                use_attention_sink=block.use_attention_sink,
             )
         else:
             raise ValueError(f"unexpected sequence_mixer_type ({sequence_mixer_type})")

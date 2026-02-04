@@ -74,6 +74,7 @@ class Kernel(Enum):
     # external kernels
     flash_attention_2 = "flash_attention_2"
     flash_attention_3 = "flash_attention_3"
+    flex_attention = "flex_attention"
     mamba2_ssm = "mamba2_ssm"
     scattermoe = "scattermoe"
     # sonicmoe

@@ -12,7 +12,7 @@ import torch.nn.functional as F
 
 from ....enums import Kernel
 from ....kernels import is_kernel_allowed, wait_for_ACT
-from ....utils import Accelerator, divide_if_divisible, is_torch_xla_available
+from ....utils import Accelerator, divide_if_divisible, is_flex_attention_available, is_torch_xla_available
 from ...cache import GenerationCache
 from ...parameter import mark_parameter_as_mup_learning_rate
 from ..chunk import contiguous_split
@@ -24,6 +24,9 @@ from .utils import flash_attention
 
 if is_torch_xla_available():
     from torch_xla.experimental.custom_kernel import flash_attention as flash_attention_tpu
+
+if is_flex_attention_available():
+    from torch.nn.attention.flex_attention import flex_attention as torch_flex_attention
 
 
 def interleave_query_key_value_tensor_for_attention(
@@ -87,6 +90,7 @@ class Attention(nn.Module):
         causal: bool,
         layer_idx: int,
         use_padding_free_transformer: bool,
+        use_attention_sink: bool = False,
     ) -> Attention:
         super().__init__()
 
@@ -98,6 +102,7 @@ class Attention(nn.Module):
         self.qkv_bias = qkv_bias
         self.use_padding_free_transformer = use_padding_free_transformer
         self.sliding_window = sliding_window
+        self.use_attention_sink = use_attention_sink
 
         self.head_dim = divide_if_divisible(
             self.hidden_size,
@@ -138,6 +143,11 @@ class Attention(nn.Module):
         mark_parameter_as_mup_learning_rate(self.c_attn.weight)
         mark_parameter_as_mup_learning_rate(self.c_proj.weight)
 
+        # Learnable attention sink (MIMO-V2 / GPT-OSS style)
+        # Per-head bias that learns to scale attention output based on logsumexp
+        if self.use_attention_sink:
+            self.sinks = nn.Parameter(torch.zeros(self.num_heads))
+
 
     def extra_repr(self):
         return f"sliding_window={self.sliding_window}, {super().extra_repr()}"
@@ -154,6 +164,7 @@ class Attention(nn.Module):
     ) -> torch.Tensor:
         use_flash_attention_2 = is_kernel_allowed(Kernel.flash_attention_2)
         use_flash_attention_3 = is_kernel_allowed(Kernel.flash_attention_3)
+        use_flex_attention = is_kernel_allowed(Kernel.flex_attention)
         accelerator = Accelerator.get_accelerator()
 
         if self.use_padding_free_transformer:
@@ -194,7 +205,40 @@ class Attention(nn.Module):
         if past_key_values is not None:
             key, value = past_key_values.update(key_states=key, value_states=value, layer_idx=self.layer_idx)
 
-        if use_flash_attention_2 or use_flash_attention_3:
+        lse = None  # logsumexp for attention sink
+
+        # flex_attention path (PyTorch native)
+        if use_flex_attention:
+            assert accelerator == Accelerator.cuda
+            assert not self.use_padding_free_transformer, "flex_attention doesn't support padding-free mode"
+            assert past_key_values is None, "flex_attention doesn't support KV cache"
+            assert self.sliding_window is None, "flex_attention sliding window not implemented"
+
+            # flex_attention expects (B, H, S, D) format - query/key/value are already in this format
+            if self.use_attention_sink:
+                hidden_states, lse = torch_flex_attention(
+                    query,
+                    key,
+                    value,
+                    scale=self.attention_multiplier,
+                    enable_gqa=True,
+                    return_lse=True,
+                )
+            else:
+                hidden_states = torch_flex_attention(
+                    query,
+                    key,
+                    value,
+                    scale=self.attention_multiplier,
+                    enable_gqa=True,
+                )
+
+            del query, key, value
+
+            hidden_states = hidden_states.transpose(1, 2)
+            hidden_states = hidden_states.reshape(batch_size, -1, self.num_heads * self.head_dim)
+
+        elif use_flash_attention_2 or use_flash_attention_3:
             assert accelerator == Accelerator.cuda
 
             if self.use_padding_free_transformer:
@@ -210,19 +254,36 @@ class Attention(nn.Module):
             key = wait_for_ACT(key, wait_in_forward=True, wait_in_backward=False)
             value = wait_for_ACT(value, wait_in_forward=True, wait_in_backward=False)
 
-            hidden_states = flash_attention(
-                query=query,
-                key=key,
-                value=value,
-                cu_seqlens=cu_seqlens,
-                max_seqlen=max_seqlen,
-                attention_mask=attention_mask,
-                use_padding_free_transformer=self.use_padding_free_transformer,
-                causal=self.causal,
-                dropout=self.softmax_dropout_p if self.training else 0,
-                softmax_scale=self.attention_multiplier,
-                sliding_window=self.sliding_window,
-            )
+            # Request lse when using FA3 with attention sink
+            if self.use_attention_sink and use_flash_attention_3:
+                hidden_states, lse = flash_attention(
+                    query=query,
+                    key=key,
+                    value=value,
+                    cu_seqlens=cu_seqlens,
+                    max_seqlen=max_seqlen,
+                    attention_mask=attention_mask,
+                    use_padding_free_transformer=self.use_padding_free_transformer,
+                    causal=self.causal,
+                    dropout=self.softmax_dropout_p if self.training else 0,
+                    softmax_scale=self.attention_multiplier,
+                    sliding_window=self.sliding_window,
+                    return_lse=True,
+                )
+            else:
+                hidden_states = flash_attention(
+                    query=query,
+                    key=key,
+                    value=value,
+                    cu_seqlens=cu_seqlens,
+                    max_seqlen=max_seqlen,
+                    attention_mask=attention_mask,
+                    use_padding_free_transformer=self.use_padding_free_transformer,
+                    causal=self.causal,
+                    dropout=self.softmax_dropout_p if self.training else 0,
+                    softmax_scale=self.attention_multiplier,
+                    sliding_window=self.sliding_window,
+                )
 
             del query, key, value
 
@@ -264,7 +325,52 @@ class Attention(nn.Module):
             hidden_states = hidden_states.transpose(1, 2)
             hidden_states = hidden_states.reshape(batch_size, -1, self.num_heads * self.head_dim)
 
+        # Apply attention sink scaling if enabled and lse is available
+        if self.use_attention_sink and lse is not None:
+            hidden_states = self._apply_attention_sink(hidden_states, lse)
+
         hidden_states = self.c_proj(hidden_states)
         hidden_states = self.dropout(hidden_states)
 
         return hidden_states
+
+    def _apply_attention_sink(self, attn_output: torch.Tensor, lse: torch.Tensor) -> torch.Tensor:
+        """Apply implicit attention sink via output scaling (MIMO-V2 / GPT-OSS style).
+
+        The attention sink mechanism scales the attention output based on the logsumexp
+        of attention scores. This allows the model to learn when to "sink" attention
+        to reduce the impact of uncertain/diffuse attention patterns.
+
+        Formula: sink_scale = sigmoid(logsumexp - sinks)
+                 attn_output = attn_output * sink_scale
+
+        Args:
+            attn_output: Attention output tensor
+                - Standard mode: (B, S, H*D)
+                - Padding-free mode: (total_tokens, H*D)
+            lse: Logsumexp from attention computation
+                - Standard mode: (B, H, S) or (B, S, H)
+                - Padding-free mode: (total_tokens, H)
+
+        Returns:
+            Scaled attention output with same shape as input
+        """
+        if self.use_padding_free_transformer:
+            # lse: (total_tokens, H), attn_output: (total_tokens, H*D)
+            sink_scale = torch.sigmoid(lse - self.sinks)  # (total_tokens, H)
+            total_tokens = attn_output.shape[0]
+            attn_output = attn_output.view(total_tokens, self.num_heads, self.head_dim)
+            attn_output = attn_output * sink_scale.unsqueeze(-1)
+            attn_output = attn_output.view(total_tokens, -1)
+        else:
+            # lse from FA3: (B, H, S), from flex_attention: (B, H, S)
+            # sinks: (H,) -> (1, H, 1) for broadcast
+            sink_scale = torch.sigmoid(lse - self.sinks.view(1, -1, 1))  # (B, H, S)
+            sink_scale = sink_scale.transpose(1, 2)  # (B, S, H)
+            # attn_output: (B, S, H*D)
+            B, S, _ = attn_output.shape
+            attn_output = attn_output.view(B, S, self.num_heads, self.head_dim)
+            attn_output = attn_output * sink_scale.unsqueeze(-1)
+            attn_output = attn_output.view(B, S, -1)
+
+        return attn_output
