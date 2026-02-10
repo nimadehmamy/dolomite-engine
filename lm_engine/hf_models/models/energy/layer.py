@@ -41,10 +41,19 @@ class EnergyBlock(nn.Module):
                 config, use_padding_free_transformer=use_padding_free_transformer, layer_idx=layer_idx
             )
 
-            self.scale_ff = nn.Parameter(torch.ones(1) * 4, requires_grad=True)
-            # self.scale_ff = nn.Parameter(torch.ones(1) * 1, requires_grad=False)
+            self.scale_ff = nn.Parameter(torch.ones(1) * 1, requires_grad=False)
 
             self.proj = nn.Linear(hidden_size, hidden_size, bias=False)
+
+            # Normalize the combined energy gradient before proj — bounds the update
+            # magnitude regardless of how large attention/MLP outputs grow.
+            self.update_norm = get_normalization_function(
+                config.normalization_function, hidden_size, eps=config.layer_norm_epsilon
+            )
+
+            # Step size for energy descent iterations — prevents update magnitude
+            # from compounding across loop iterations. Initialized to 1/num_iterations.
+            self.step_size = 1.0 / config.num_iterations
         else:
 
             hidden_size = config.hidden_size
@@ -84,11 +93,31 @@ class EnergyBlock(nn.Module):
                 max_seqlen=max_seqlen,
             )
             ffwd_out = self.ffwd(ln_x)
-            hidden_states = hidden_states - self.proj(attn_out + self.scale_ff * ffwd_out)
+            combined = attn_out + self.scale_ff * ffwd_out
+            combined = self.update_norm(combined)
+            update = self.step_size * self.proj(combined)
+            hidden_states = hidden_states - update
+
+            # Log block-level dynamics
+            self._log_block_norms(hidden_states, ln_x, update)
+
             return hidden_states
         else:
             return self.forward_gpt(hidden_states,past_key_values,attention_mask,rope_cos_sin,cu_seqlens,max_seqlen)
 
+
+    def _log_block_norms(self, hidden_states: torch.Tensor, ln_x: torch.Tensor, update: torch.Tensor) -> None:
+        """Cache block-level norms for external tracking."""
+        with torch.no_grad():
+            self._cached_block_metrics = {
+                "hidden_state_norm": hidden_states.norm(dim=-1).mean().item(),
+                "ln_x_norm": ln_x.norm(dim=-1).mean().item(),
+                "update_norm": update.norm(dim=-1).mean().item(),
+            }
+
+    def get_block_metrics(self) -> dict[str, float] | None:
+        """Return cached block metrics for external tracking."""
+        return getattr(self, "_cached_block_metrics", None)
 
     def energy_per_token(self, x: torch.Tensor) -> torch.Tensor:
         """Compute total energy per token."""

@@ -21,11 +21,48 @@ from ...modeling_utils.dropout import Dropout
 from ...modeling_utils.linear import ParameterizedLinear
 from ...modeling_utils.position_embedding import apply_rotary_pos_emb
 from ...modeling_utils.sequence_mixer_blocks.utils import flash_attention
-from ...parameter import mark_parameter_as_mup_learning_rate
+from ...parameter import mark_parameter_as_mup_learning_rate, mark_parameter_as_no_weight_decay
 
 
 if is_torch_xla_available():
     from torch_xla.experimental.custom_kernel import flash_attention as flash_attention_tpu
+
+
+class c_atn_parameterized(ParameterizedLinear):
+    def __init__(
+        self,
+        in_features: int,
+        out_features: int,
+        bias: bool = True,
+        device: torch.device | None = None,
+        dtype: torch.dtype | None = None,
+        std: float | None = None,
+    ):
+        self.std = std
+        self.c_attn_init_std = None
+        super().__init__(in_features, out_features, bias, device, dtype, std)
+
+    @torch.no_grad()
+    def reset_parameters(self) -> None:
+        if self.std is None:
+            super().reset_parameters()
+        else:
+            torch.nn.init.xavier_uniform_(self.weight, gain=2.0)
+            if self.weight.is_meta:
+                fan_in, fan_out = self.in_features, self.out_features
+                a = 2.0 * math.sqrt(6.0 / (fan_in + fan_out))
+                self.c_attn_init_std = a / math.sqrt(3.0)
+            else:
+                self.c_attn_init_std = self.weight.std().item()
+            if hasattr(self, "bias") and self.bias is not None:
+                self.bias.zero_()
+
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        # Normalize weight to unit norm and rescale to init std every forward pass.
+        # Direction of weights is learnable; magnitude is bounded at init scale.
+        w = self.weight
+        w = w / (w.norm() + 1e-6) * self.c_attn_init_std * math.sqrt(w.numel())
+        return F.linear(input, w, self.bias)
 
 
 class EnergyAttention_QK(nn.Module):
@@ -82,29 +119,29 @@ class EnergyAttention_QK(nn.Module):
         if init_method == "mup":
             std /= math.sqrt(m_width)
 
-
         # c_attn projects to Q and K only (V = K in energy attention)
-        self.c_attn = ParameterizedLinear(
+        self.c_attn = c_atn_parameterized(
             self.hidden_size,
             2 * self.hidden_size,
             bias=self.qkv_bias,
             std=initializer_range,
-        )
+        ) # H, 2H :
+        # Exclude c_attn weight from weight decay — forward normalization already
+        # controls its effective magnitude. Weight decay + weight norm creates
+        # pathological gradient amplification as ||w|| shrinks.
+        mark_parameter_as_no_weight_decay(self.c_attn.weight)
 
-        # Use xavier_uniform_ initialization with gain=8.0 (matching energy attention reference)
-        # torch.nn.init.xavier_uniform_(self.c_attn.weight, gain=8.0)
-        # # Store init std for reference
-        # if self.c_attn.weight.is_meta:
-        #     fan_in, fan_out = self.hidden_size, 2 * self.hidden_size
-        #     a = 8.0 * math.sqrt(6.0 / (fan_in + fan_out))
-        #     self.c_attn_init_std = a / math.sqrt(3.0)
-        # else:
-        #     self.c_attn_init_std = self.c_attn.weight.std().item()
+        if self.c_attn.weight.is_meta:
+            fan_in, fan_out = self.hidden_size, 2 * self.hidden_size
+            a = 2.0 * math.sqrt(6.0 / (fan_in + fan_out))
+            self.c_attn_init_std = a / math.sqrt(3.0)
+        else:
+            self.c_attn_init_std = self.c_attn.weight.std().item()
 
         # Output scale: since we normalize V and W_Q to unit norm for stability,
         # we need to scale up the output to match original magnitude
         # Scale = sqrt(head_dim) gives reasonable output magnitude when combined with normalized V and W_Q
-        self.output_scale = math.sqrt(self.head_dim)
+        # self.output_scale = math.sqrt(self.head_dim)
 
         self.softmax_dropout_p = softmax_dropout
         self.softmax_dropout = Dropout(softmax_dropout)
@@ -119,15 +156,14 @@ class EnergyAttention_QK(nn.Module):
         return f"sliding_window={self.sliding_window}, energy_attention=True"
 
     def _get_q_weight_for_output(self) -> torch.Tensor:
-        """Extract Q projection weights for energy attention output projection."""
-        # c_attn.weight shape: (2*hidden_size, hidden_size)
-        # Q portion is first hidden_size rows
-        q_weight = self.c_attn.weight[: self.hidden_size]  # (H*D, C)
+        """Extract Q projection weights for energy attention output projection.
+        Uses the same weight normalization as the forward pass of c_atn_parameterized."""
+        # Apply same normalization as c_atn_parameterized.forward
+        w = self.c_attn.weight
+        w = w / (w.norm() + 1e-6) * self.c_attn_init_std * math.sqrt(w.numel())
+        q_weight = w[: self.hidden_size]
         q_weight = q_weight.view(self.num_heads, self.head_dim, self.hidden_size)
         q_weight = q_weight.permute(0, 2, 1).contiguous()  # (H, C, D)
-        # Normalize to unit norm per head to prevent weight growth from amplifying output
-        # This keeps the output projection bounded regardless of how c_attn weights grow
-        q_weight = q_weight / (q_weight.norm(dim=(1, 2), keepdim=True) + 1e-6)
         return q_weight
 
     def forward(
@@ -172,7 +208,7 @@ class EnergyAttention_QK(nn.Module):
         # V = K (core energy attention property)
         # Normalize value vectors to unit norm per position to bound attention output magnitude
         # This prevents c_attn weight growth from amplifying attention output
-        value = key / (key.norm(dim=-1, keepdim=True) + 1e-6)
+        value = key #  / (key.norm(dim=-1, keepdim=True) + 1e-6)
 
         if past_key_values is not None:
             key, value = past_key_values.update(
@@ -251,7 +287,7 @@ class EnergyAttention_QK(nn.Module):
 
 
 
-        hidden_states = self.dropout(hidden_states) * self.output_scale
+        hidden_states = self.dropout(hidden_states) #  * self.output_scale
 
         # Log metrics
         self._log_norms(hidden_states, W_Q)
@@ -274,6 +310,7 @@ class EnergyAttention_QK(nn.Module):
                 "c_attn_norm": c_attn_norm,
                 "W_Q_norm": w_q_norm,
                 "output_norm": out_norm,
+                "c_attn_std": self.c_attn_init_std,
             }
 
     def get_metrics(self) -> dict[str, float] | None:

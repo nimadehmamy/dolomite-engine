@@ -13,6 +13,7 @@ from .hf_models import CommonConfig, is_custom_model
 from .hf_models.modeling_utils import is_glu
 from .hf_models.modeling_utils.mlp_blocks.mlp import Energy_MLP
 from .hf_models.modeling_utils.sequence_mixer_blocks.energy_attention import EnergyAttention_QK
+from .hf_models.models.energy.layer import EnergyBlock
 from .utils import (
     Accelerator,
     ExperimentsTracker,
@@ -83,9 +84,18 @@ def track_metrics(
                     for metric_name, value in metrics.items():
                         energy_mlp_metrics[f"{name}/{metric_name}"] = value
 
+        # Track EnergyBlock metrics (hidden_state_norm, ln_x_norm, update_norm)
+        energy_block_metrics = {}
+        for name, module in model_container[0].named_modules():
+            if isinstance(module, EnergyBlock):
+                block_metrics = module.get_block_metrics()
+                if block_metrics is not None:
+                    for metric_name, value in block_metrics.items():
+                        energy_block_metrics[f"{name}/{metric_name}"] = value
+
         metrics_tracker.update({f"model/scale_ff/{k}": v for k, v in scale_ff_values.items()})
         metrics_tracker.update({f"model/energy_mlp/{k}": v for k, v in energy_mlp_metrics.items()})
-        # Note: EnergyAttention metrics are also added to energy_mlp_metrics dict for simplicity
+        metrics_tracker.update({f"model/energy_block/{k}": v for k, v in energy_block_metrics.items()})
     
     # experiments tracker
     experiments_tracker.track(metrics_tracker.get_dict(), step=global_step, context=context)
