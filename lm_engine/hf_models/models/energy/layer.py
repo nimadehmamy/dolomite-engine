@@ -41,7 +41,7 @@ class EnergyBlock(nn.Module):
                 config, use_padding_free_transformer=use_padding_free_transformer, layer_idx=layer_idx
             )
 
-            self.scale_ff = nn.Parameter(torch.ones(1) * 1, requires_grad=False)
+            # self.scale_ff = nn.Parameter(torch.ones(1) * 1, requires_grad=False)
 
             self.proj = nn.Linear(hidden_size, hidden_size, bias=False)
 
@@ -93,7 +93,9 @@ class EnergyBlock(nn.Module):
                 max_seqlen=max_seqlen,
             )
             ffwd_out = self.ffwd(ln_x)
-            combined = attn_out + self.scale_ff * ffwd_out
+            combined = attn_out + ffwd_out
+
+            # combined = attn_out + self.scale_ff * ffwd_out
             combined = self.update_norm(combined)
             update = self.step_size * self.proj(combined)
             hidden_states = hidden_states - update
