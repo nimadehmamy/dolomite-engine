@@ -5,6 +5,7 @@
 from ...config import CommonConfig
 from .mlp import MLP, interleave_up_gate_tensor_for_mlp, split_up_gate_tensor_for_mlp, Energy_MLP
 from .moe import MoE, ParameterizedExperts
+from .moe_energy import MoE_Energy, MoE_Energy_Module
 
 
 
@@ -35,6 +36,26 @@ def get_mlp_block(config: CommonConfig, use_padding_free_transformer: bool, laye
             **kwargs,
             shared_intermediate_size=block.shared_intermediate_size,
             use_interleaved_weights=block.use_interleaved_weights,
+            shared_expert_gating=block.shared_expert_gating,
+            normalized_topk=block.normalized_topk,
+            num_experts=block.num_experts,
+            num_experts_per_tok=block.num_experts_per_tok,
+            use_padding_free_transformer=use_padding_free_transformer,
+        )
+    elif mlp_type == "MoE_Energy":
+        mlp = MoE_Energy(
+            **kwargs,
+            shared_intermediate_size=block.shared_intermediate_size,
+            shared_expert_gating=block.shared_expert_gating,
+            normalized_topk=block.normalized_topk,
+            num_experts=block.num_experts,
+            num_experts_per_tok=block.num_experts_per_tok,
+            use_padding_free_transformer=use_padding_free_transformer,
+        )
+    elif mlp_type == "MoE_Energy_Module":
+        mlp = MoE_Energy_Module(
+            **kwargs,
+            shared_intermediate_size=block.shared_intermediate_size,
             shared_expert_gating=block.shared_expert_gating,
             normalized_topk=block.normalized_topk,
             num_experts=block.num_experts,

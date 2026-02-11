@@ -41,3 +41,27 @@ class _MoEArgs(_MLPArgs):
 
     def model_post_init(self, __context: Any) -> None:
         assert self.mlp_type == "MoE"
+
+
+class _MoEEnergyArgs(_EnergyMLPArgs):
+    mlp_type: str = "MoE_Energy"
+    shared_intermediate_size: int | None = None
+    num_experts: int = 8
+    num_experts_per_tok: int = 2
+    shared_expert_gating: bool = False
+    normalized_topk: bool = True
+
+    def model_post_init(self, __context: Any) -> None:
+        assert self.mlp_type == "MoE_Energy"
+
+
+class _MoEEnergyModuleArgs(_EnergyMLPArgs):
+    mlp_type: str = "MoE_Energy_Module"
+    shared_intermediate_size: int | None = None
+    num_experts: int = 8
+    num_experts_per_tok: int = 2
+    shared_expert_gating: bool = False
+    normalized_topk: bool = True
+
+    def model_post_init(self, __context: Any) -> None:
+        assert self.mlp_type == "MoE_Energy_Module"
