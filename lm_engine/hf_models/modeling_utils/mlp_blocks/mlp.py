@@ -57,9 +57,9 @@ class Energy_MLP(nn.Module):
         mark_parameter_as_mup_learning_rate(self.W1.weight)
         mark_parameter_as_mup_learning_rate(self.W2.weight)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Project to intermediate size using ParameterizedLinear layers
-        W1x = self.W1(x)  # (b, t, intermediate_size)
+    def forward(self, x: torch.Tensor, cached_W1x: torch.Tensor | None = None) -> torch.Tensor:
+        # Reuse pre-computed W1x if provided (e.g. from energy-based routing)
+        W1x = cached_W1x if cached_W1x is not None else self.W1(x)
         W2x = self.W2(x)  # (b, t, intermediate_size)
 
         # GELU path
@@ -85,8 +85,8 @@ class Energy_MLP(nn.Module):
             w2_norm = self.W2.weight.norm().item()
             w_total_norm = math.sqrt(w1_norm**2 + w2_norm**2)
 
-            # Output norm (mean over batch)
-            out_norm = out.norm(dim=-1).mean().item()
+            # Output norm (mean over batch) — guard against empty tensors (0 tokens routed)
+            out_norm = out.norm(dim=-1).mean().item() if out.numel() > 0 else 0.0
 
             self._cached_metrics = {
                 "W1_norm": w1_norm,

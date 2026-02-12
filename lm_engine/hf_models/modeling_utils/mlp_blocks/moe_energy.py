@@ -328,12 +328,12 @@ class MoE_Energy_Module(nn.Module):
     stores each expert as a standalone Energy_MLP nn.Module — matching the standard
     MoE pattern where each expert is an independent module.
 
-    Forward:
-        1. Router: gate(x) -> top-k expert selection + routing weights
-        2. Sort tokens by expert assignment
-        3. For each expert, call expert.forward(tokens) directly
-        4. Gate outputs by routing weights
-        5. Scatter back to original token order
+    Supports two routing modes:
+        energy_routing=False (default): standard linear gate  W_gate · h  -> logits
+        energy_routing=True:  free-energy routing  -E_k(h) / tau  -> logits
+            Gives exact energy interpretation: output = -nabla_h F(h)
+            where F(h) = -tau * log sum_k exp(-E_k(h) / tau)  (free energy)
+            W1x is cached during routing and reused in selected expert forwards.
     """
 
     def __init__(
@@ -353,6 +353,8 @@ class MoE_Energy_Module(nn.Module):
         m_width: float,
         num_layers: int,
         use_padding_free_transformer: bool,
+        energy_routing: bool = False,
+        energy_routing_tau: float = 1.0,
     ) -> MoE_Energy_Module:
         super().__init__()
 
@@ -364,6 +366,8 @@ class MoE_Energy_Module(nn.Module):
         self.shared_intermediate_size = shared_intermediate_size
         self.shared_expert_gating = shared_expert_gating
         self.normalized_topk = normalized_topk
+        self.energy_routing = energy_routing
+        self.energy_routing_tau = energy_routing_tau
 
         std = _get_std_for_linear(initializer_range, init_method, m_width)
 
@@ -379,13 +383,15 @@ class MoE_Energy_Module(nn.Module):
             add_bias=add_bias,
         )
 
-        # Router gate
-        self.gate = ParameterizedLinear(
-            in_features=hidden_size,
-            out_features=num_experts,
-            bias=False,
-            std=std,
-        )
+        # Router gate (only needed for standard routing)
+        if not self.energy_routing:
+            self.gate = ParameterizedLinear(
+                in_features=hidden_size,
+                out_features=num_experts,
+                bias=False,
+                std=std,
+            )
+            mark_parameter_as_mup_learning_rate(self.gate.weight)
 
         # N independent Energy_MLP experts
         self.experts = nn.ModuleList([
@@ -412,16 +418,16 @@ class MoE_Energy_Module(nn.Module):
             and torch.cuda.get_device_capability(torch.cuda.current_device()) >= (9, 0)
         )
 
-        mark_parameter_as_mup_learning_rate(self.gate.weight)
-
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         if not self.use_padding_free_transformer:
             batch_size, sequence_length, _ = hidden_states.shape
 
         hidden_states = hidden_states.view(-1, self.hidden_size)
 
-        router_logits, router_weights, selected_experts = self._compute_routing_weights(hidden_states)
-        moe_output, expert_frequency = self._compute_experts(hidden_states, router_weights, selected_experts)
+        router_logits, router_weights, selected_experts, cached_W1x = self._compute_routing_weights(hidden_states)
+        moe_output, expert_frequency = self._compute_experts(
+            hidden_states, router_weights, selected_experts, cached_W1x
+        )
 
         if self.shared_intermediate_size is None:
             hidden_states = moe_output
@@ -451,8 +457,34 @@ class MoE_Energy_Module(nn.Module):
 
     def _compute_routing_weights(
         self, hidden_states: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        router_logits = self.gate(hidden_states)
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, list[torch.Tensor] | None]:
+        """Compute routing logits, weights, selected experts, and optional cached W1x.
+
+        When energy_routing=True, routing logits come from expert energies:
+            logits_k = -E_k(h) / tau = -GELU(W1_k h).sum(-1) / tau
+        and W1x for all experts is cached for reuse in the expert forward pass.
+
+        Returns:
+            router_logits: (T, num_experts) — raw logits for aux loss
+            router_weights: (T, top_k) — normalized weights for selected experts
+            selected_experts: (T, top_k) — expert indices
+            cached_W1x: list of (T, intermediate_size) tensors or None
+        """
+        if self.energy_routing:
+            # Compute W1x and energy for every expert (cheap: one matmul + GELU + sum each)
+            cached_W1x = []
+            energies = []
+            for expert in self.experts:
+                W1x = expert.W1(hidden_states)          # (T, intermediate_size)
+                cached_W1x.append(W1x)
+                E_k = F.gelu(W1x).sum(dim=-1)           # (T,)
+                energies.append(E_k)
+
+            # Router logits = -E_k / tau  (lower energy = higher logit = more likely routed)
+            router_logits = -torch.stack(energies, dim=-1) / self.energy_routing_tau  # (T, num_experts)
+        else:
+            router_logits = self.gate(hidden_states)
+            cached_W1x = None
 
         if self.normalized_topk:
             router_weights, selected_experts = self._get_topk(router_logits)
@@ -463,15 +495,20 @@ class MoE_Energy_Module(nn.Module):
             router_weights = router_weights.type_as(hidden_states)
             router_weights, selected_experts = self._get_topk(router_weights)
 
-        return router_logits, router_weights, selected_experts
+        return router_logits, router_weights, selected_experts, cached_W1x
 
     def _compute_experts(
         self,
         hidden_states: torch.Tensor,
         router_weights: torch.Tensor,
         selected_experts: torch.Tensor,
+        cached_W1x: list[torch.Tensor] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Dispatch tokens to Energy_MLP module experts, gather back."""
+        """Dispatch tokens to Energy_MLP module experts, gather back.
+
+        If cached_W1x is provided (from energy routing), reuse W1x for each expert
+        to skip the redundant W1 matmul in the expert forward pass.
+        """
 
         with torch.no_grad():
             sorted_expert_idxs, sorted_scattered_idxs = selected_experts.flatten().sort()
@@ -494,11 +531,25 @@ class MoE_Energy_Module(nn.Module):
         freq_list = expert_frequency.tolist()
         x_splits = x_sorted.split(freq_list, dim=0)
 
+        # If energy routing, also gather and split cached W1x per expert
+        W1x_splits = None
+        if cached_W1x is not None:
+            W1x_splits = []
+            for i in range(self.num_experts):
+                # Gather W1x for tokens assigned to expert i using same batch_index
+                start = sum(freq_list[:i])
+                end = start + freq_list[i]
+                expert_token_indices = batch_index[start:end]
+                W1x_splits.append(cached_W1x[i][expert_token_indices])
+
         outputs = []
         for i in range(self.num_experts):
             xi = x_splits[i]
-            # Each expert is a full Energy_MLP module — just call forward
-            outputs.append(self.experts[i](xi))
+            if W1x_splits is not None:
+                # Reuse cached W1x — skip redundant W1 matmul
+                outputs.append(self.experts[i](xi, cached_W1x=W1x_splits[i]))
+            else:
+                outputs.append(self.experts[i](xi))
 
         hidden_states = torch.cat(outputs, dim=0)
 
@@ -555,16 +606,29 @@ class MoE_Energy_Module(nn.Module):
         return loss.type_as(logits)
 
     def energy_per_token(self, x: torch.Tensor) -> torch.Tensor:
-        """Router-probability-weighted sum of per-expert energies."""
-        x_flat = x.view(-1, self.hidden_size)
-        router_logits = self.gate(x_flat)
-        router_weights = F.softmax(router_logits.float(), dim=-1)
-        router_weights = router_weights.type_as(x_flat)
+        """Compute energy per token.
 
-        energy = torch.zeros(x_flat.size(0), device=x.device, dtype=x.dtype)
-        for i in range(self.num_experts):
-            expert_energy = self.experts[i].energy_per_token(x_flat.unsqueeze(0)).squeeze(0)
-            energy = energy + router_weights[:, i] * expert_energy
+        energy_routing=True:  free energy  F(h) = -tau * log sum_k exp(-E_k(h) / tau)
+        energy_routing=False: weighted sum  sum_k w_k(h) * E_k(h)  (approximate)
+        """
+        x_flat = x.view(-1, self.hidden_size)
+
+        # Collect per-expert energies
+        expert_energies = []
+        for expert in self.experts:
+            expert_energies.append(expert.energy_per_token(x_flat.unsqueeze(0)).squeeze(0))
+        expert_energies = torch.stack(expert_energies, dim=-1)  # (T, num_experts)
+
+        if self.energy_routing:
+            # Free energy: F(h) = -tau * logsumexp(-E_k(h) / tau)
+            energy = -self.energy_routing_tau * torch.logsumexp(
+                -expert_energies / self.energy_routing_tau, dim=-1
+            )
+        else:
+            # Weighted sum using router probabilities
+            router_logits = self.gate(x_flat)
+            router_weights = F.softmax(router_logits.float(), dim=-1).type_as(x_flat)
+            energy = (router_weights * expert_energies).sum(dim=-1)
 
         if x.dim() == 3:
             energy = energy.view(x.shape[0], x.shape[1])

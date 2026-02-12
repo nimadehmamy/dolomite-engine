@@ -62,6 +62,8 @@ class _MoEEnergyModuleArgs(_EnergyMLPArgs):
     num_experts_per_tok: int = 2
     shared_expert_gating: bool = False
     normalized_topk: bool = True
+    energy_routing: bool = False        # True: route by expert energies (exact free-energy interpretation)
+    energy_routing_tau: float = 1.0     # temperature for free-energy routing softmax
 
     def model_post_init(self, __context: Any) -> None:
         assert self.mlp_type == "MoE_Energy_Module"
