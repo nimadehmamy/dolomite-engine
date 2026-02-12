@@ -126,3 +126,12 @@ class _GatedDeltaNetArgs(BaseArgs):
 
     def model_post_init(self, __context: Any) -> None:
         assert self.sequence_mixer_type == "gated_deltanet"
+
+
+class _nGPTSoftmaxAttentionArgs(_SoftmaxAttentionArgs):
+    sequence_mixer_type: str = "ngpt_softmax_attention"
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.qkv_bias is None:
+            self.qkv_bias = self.add_bias
+        assert self.sequence_mixer_type == "ngpt_softmax_attention"

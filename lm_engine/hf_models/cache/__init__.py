@@ -19,6 +19,7 @@ _CACHE_CLASSES = {
     "gru": _RNNCache,
     "mamba2": _Mamba2Cache,
     "multihead_latent_attention": _SoftmaxAttentionCache,
+    "ngpt_softmax_attention": _SoftmaxAttentionCache,
     "rnn": _RNNCache,
     "softmax_attention": _SoftmaxAttentionCache,
 }

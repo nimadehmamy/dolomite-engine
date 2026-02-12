@@ -19,6 +19,7 @@ from .checkpointing import ensure_last_checkpoint_is_saved, load_checkpoint_for_
 from .containers import LRSchedulerContainer, ModelContainer, OptimizerContainer, log_model_optimizer_container
 from .data import ResumableDataLoader, get_next_batch, get_pretraining_dataloaders
 from .distributed import wrap_model_container_for_distributed_training
+from .distributed_weight_norm import maybe_normalize_ngpt_weights
 from .dtensors import dtensor_to_tensor
 from .enums import TuningMethod
 from .hf_models import disable_generation_cache
@@ -115,6 +116,11 @@ def train_step_with_pipeline_parallel(
         FP8Manager.sync_float8_amax_and_scale_history(model_container)
 
     optimizer_container.step()
+
+    # nGPT: normalize all weight matrices after optimizer step
+    for model in model_container:
+        maybe_normalize_ngpt_weights(model, fsdp_algorithm)
+
     lr_scheduler_container.step()
 
     if is_torchao_available():
@@ -246,6 +252,10 @@ def train_step_without_pipeline_parallel(
             FP8Manager.sync_float8_amax_and_scale_history([model])
 
         optimizer_container.step()
+
+        # nGPT: normalize all weight matrices after optimizer step
+        maybe_normalize_ngpt_weights(model, fsdp_algorithm)
+
         lr_scheduler_container.step()
 
     if accelerator == Accelerator.tpu:
@@ -371,16 +381,17 @@ def train(
         assert len(model_container) == 1
 
     # model flops per accelerator
-    model_flops = (
-        get_model_tflops(
-            config=model_container[0].config,
-            batch_size=global_batch_size,
-            sequence_length=sequence_length,
-            gradient_checkpointing_method=args.distributed_args.gradient_checkpointing_method,
-            gradient_checkpointing_args=args.distributed_args.gradient_checkpointing_args,
-        )
-        / ProcessGroupManager.get_world_size()
-    )
+    model_flops = None
+    # (
+    #     get_model_tflops(
+    #         config=model_container[0].config,
+    #         batch_size=global_batch_size,
+    #         sequence_length=sequence_length,
+    #         gradient_checkpointing_method=args.distributed_args.gradient_checkpointing_method,
+    #         gradient_checkpointing_args=args.distributed_args.gradient_checkpointing_args,
+    #     )
+    #     / ProcessGroupManager.get_world_size()
+    # )
 
     forward_context = nullcontext
     backward_context = loss_parallel if ProcessGroupManager.is_tensor_parallel_enabled() else nullcontext

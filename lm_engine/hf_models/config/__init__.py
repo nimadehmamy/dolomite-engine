@@ -17,6 +17,7 @@ from .sequence_mixer import (
     _GRUArgs,
     _Mamba2Args,
     _MultiHeadLatentAttentionArgs,
+    _nGPTSoftmaxAttentionArgs,
     _RNNArgs,
     _SoftmaxAttentionArgs,
 )
@@ -70,6 +71,7 @@ _SEQUENCE_MIXER_CONFIG_CLASSES = {
     "gru": _GRUArgs,
     "mamba2": _Mamba2Args,
     "multihead_latent_attention": _MultiHeadLatentAttentionArgs,
+    "ngpt_softmax_attention": _nGPTSoftmaxAttentionArgs,
     "rnn": _RNNArgs,
     "softmax_attention": _SoftmaxAttentionArgs,
     "gated_deltanet": _GatedDeltaNetArgs,
@@ -136,9 +138,9 @@ class CommonConfig(PretrainedConfig):
 
         self.rope_dim = rope_dim
         if self.rope_dim is None and position_embedding_type == "rope":
-            assert (
-                self.check_equal_for_all_and_get_value("sequence_mixer_blocks", "sequence_mixer_type")
-                == "softmax_attention"
+            assert self.check_equal_for_all_and_get_value("sequence_mixer_blocks", "sequence_mixer_type") in (
+                "softmax_attention",
+                "ngpt_softmax_attention",
             ), "specify rope_dim"
 
             self.rope_dim = divide_if_divisible(
@@ -212,6 +214,7 @@ class CommonConfig(PretrainedConfig):
             | _GRUArgs
             | _Mamba2Args
             | _MultiHeadLatentAttentionArgs
+            | _nGPTSoftmaxAttentionArgs
             | _RNNArgs
             | _SoftmaxAttentionArgs
             | _GatedDeltaNetArgs
