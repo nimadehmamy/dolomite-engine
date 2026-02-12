@@ -152,18 +152,27 @@ class CommonConfig(PretrainedConfig):
         self._set_sequence_mixer_blocks()
         assert len(self.sequence_mixer_blocks) == self.num_layers
 
-        self.rope_dim = rope_dim
-        if self.rope_dim is None and position_embedding_type == "rope":
-            assert (
-                self.check_equal_for_all_and_get_value("sequence_mixer_blocks", "sequence_mixer_type")
-                == "softmax_attention"
-            ), "specify rope_dim"
+        # resolve per-layer position_embedding_type: fill in global default where not specified
+        self._resolve_per_layer_position_embedding_type(position_embedding_type)
 
-            self.rope_dim = divide_if_divisible(
-                self.hidden_size,
-                self.check_equal_for_all_and_get_value("sequence_mixer_blocks", "num_attention_heads"),
-                "",
-            )
+        self.rope_dim = rope_dim
+        # check if any layer uses rope (after resolving per-layer defaults)
+        any_layer_uses_rope = any(
+            getattr(block, "position_embedding_type", None) == "rope"
+            for block in self.sequence_mixer_blocks
+        )
+
+        if self.rope_dim is None and any_layer_uses_rope:
+            # try to auto-compute rope_dim from attention heads
+            rope_attention_blocks = [
+                block for block in self.sequence_mixer_blocks
+                if getattr(block, "position_embedding_type", None) == "rope"
+                and hasattr(block, "num_attention_heads")
+            ]
+            assert len(rope_attention_blocks) > 0, "specify rope_dim"
+            num_heads = rope_attention_blocks[0].num_attention_heads
+            assert all(b.num_attention_heads == num_heads for b in rope_attention_blocks), "specify rope_dim"
+            self.rope_dim = divide_if_divisible(self.hidden_size, num_heads, "")
 
         self.mlp_blocks = mlp_blocks
         self._set_mlp_blocks()
@@ -220,6 +229,17 @@ class CommonConfig(PretrainedConfig):
         assert all([_get(block, key_block) == value for block in blocks])
 
         return value
+
+    def _resolve_per_layer_position_embedding_type(self, global_position_embedding_type: str) -> None:
+        """Fill in position_embedding_type on each sequence mixer block that supports it.
+
+        If the block has a position_embedding_type field and it is None, set it to the global default.
+        This allows per-layer override when specified in the YAML config.
+        """
+        for block in self.sequence_mixer_blocks:
+            if hasattr(block, "position_embedding_type"):
+                if block.position_embedding_type is None:
+                    block.position_embedding_type = global_position_embedding_type
 
     def _set_sequence_mixer_blocks(self) -> None:
         if self.sequence_mixer_blocks is None:

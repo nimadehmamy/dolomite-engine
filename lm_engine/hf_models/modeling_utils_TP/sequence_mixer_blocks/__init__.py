@@ -21,7 +21,7 @@ def get_sequence_mixer_TP(
         num_attention_heads=block.num_attention_heads,
         num_key_value_heads=block.num_key_value_heads,
         attention_multiplier=block.attention_multiplier,
-        position_embedding_type=config.position_embedding_type,
+        position_embedding_type=block.position_embedding_type,
         add_bias=block.add_bias,
         softmax_dropout=block.softmax_dropout,
         dropout=block.dropout,

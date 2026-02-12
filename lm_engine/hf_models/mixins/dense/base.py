@@ -335,12 +335,13 @@ class BaseModelMixin(PreTrainedModelMixin):
 
     def _get_rope_cos_sin(
         self, key_length: int, position_ids: torch.Tensor, dtype: torch.dtype
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        if self.position_embedding_type == "rope":
+    ) -> tuple[torch.Tensor, torch.Tensor] | None:
+        if hasattr(self, "rope"):
             cos, sin = self.rope(key_length, dtype=dtype)
             cos = cos[position_ids].unsqueeze(1)
             sin = sin[position_ids].unsqueeze(1)
             return cos, sin
+        return None
 
     def _prepare_causal_attention_mask(
         self,
@@ -386,7 +387,7 @@ class BaseModelMixin(PreTrainedModelMixin):
     def _get_initial_hidden_state(self, input_ids: torch.Tensor, position_ids: torch.Tensor | None) -> torch.Tensor:
         hidden_state = self.wte(input_ids)
 
-        if self.position_embedding_type == "learned_absolute":
+        if hasattr(self, "wpe"):
             hidden_state = hidden_state + self.wpe(position_ids)
 
         hidden_state = self.embedding_dropout(hidden_state)
@@ -460,9 +461,21 @@ class BaseModelMixin(PreTrainedModelMixin):
     def _setup_positional_encoding(self) -> None:
         max_position_embeddings = self.config.max_position_embeddings
 
-        if self.position_embedding_type == "learned_absolute":
+        # collect per-layer position embedding types
+        self._per_layer_position_embedding_types = []
+        for block in self.config.sequence_mixer_blocks:
+            if hasattr(block, "position_embedding_type") and block.position_embedding_type is not None:
+                self._per_layer_position_embedding_types.append(block.position_embedding_type)
+            else:
+                self._per_layer_position_embedding_types.append(self.position_embedding_type)
+
+        any_layer_uses_rope = any(t == "rope" for t in self._per_layer_position_embedding_types)
+        any_layer_uses_learned = any(t == "learned_absolute" for t in self._per_layer_position_embedding_types)
+
+        if any_layer_uses_learned:
             self.wpe = ParameterizedEmbedding(max_position_embeddings, self.embed_dim, std=self.initializer_range)
-        elif self.position_embedding_type == "rope":
+
+        if any_layer_uses_rope:
             if self.config.rope_scaling is None:
                 self.rope = RoPE(
                     self.rope_dim,
@@ -477,10 +490,6 @@ class BaseModelMixin(PreTrainedModelMixin):
                     scale=self.config.rope_scaling["factor"],
                     original_max_position_embeddings=self.config.rope_scaling["original_max_position_embeddings"],
                 )
-        elif self.position_embedding_type == "nope":
-            pass
-        else:
-            raise NotImplementedError()
 
     def _get_mask_value(self, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
         # torch.where expects a tensor. We use a cache to avoid recreating it every time.

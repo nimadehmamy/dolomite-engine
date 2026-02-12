@@ -169,7 +169,18 @@ class BaseModelMixin_TP(PreTrainedModelMixin_TP, BaseModelMixin):
     def _setup_positional_encoding(self) -> None:
         max_position_embeddings = self.config.max_position_embeddings
 
-        if self.position_embedding_type == "learned_absolute":
+        # collect per-layer position embedding types
+        self._per_layer_position_embedding_types = []
+        for block in self.config.sequence_mixer_blocks:
+            if hasattr(block, "position_embedding_type") and block.position_embedding_type is not None:
+                self._per_layer_position_embedding_types.append(block.position_embedding_type)
+            else:
+                self._per_layer_position_embedding_types.append(self.position_embedding_type)
+
+        any_layer_uses_rope = any(t == "rope" for t in self._per_layer_position_embedding_types)
+        any_layer_uses_learned = any(t == "learned_absolute" for t in self._per_layer_position_embedding_types)
+
+        if any_layer_uses_learned:
             if self.is_first_stage:
                 self.wpe = Embedding_TP(
                     max_position_embeddings,
@@ -178,7 +189,8 @@ class BaseModelMixin_TP(PreTrainedModelMixin_TP, BaseModelMixin):
                     use_padding_free_transformer=self.use_padding_free_transformer,
                     sequence_parallel=self.sequence_parallel,
                 )
-        elif self.position_embedding_type == "rope":
+
+        if any_layer_uses_rope:
             if self.config.rope_scaling is None:
                 self.rope = RoPE(
                     self.rope_dim, max_position_embeddings=max_position_embeddings, base=self.config.rope_theta
@@ -191,7 +203,3 @@ class BaseModelMixin_TP(PreTrainedModelMixin_TP, BaseModelMixin):
                     scale=self.config.rope_scaling["factor"],
                     original_max_position_embeddings=self.config.rope_scaling["original_max_position_embeddings"],
                 )
-        elif self.position_embedding_type == "nope":
-            pass
-        else:
-            raise NotImplementedError()
