@@ -23,9 +23,6 @@ class nGPTConfig(CommonConfig):
         ngpt_sz_init_scaling: float | None = None,
         **kwargs,
     ) -> nGPTConfig:
-        # nGPT requires no weight tying
-        kwargs["tie_word_embeddings"] = False
-
         self.ngpt_attn_alpha_init = ngpt_attn_alpha_init
         self.ngpt_mlp_alpha_init = ngpt_mlp_alpha_init
         self.ngpt_suv_init_scaling = ngpt_suv_init_scaling

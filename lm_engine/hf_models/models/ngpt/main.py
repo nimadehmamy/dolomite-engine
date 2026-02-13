@@ -16,7 +16,7 @@ from .config import nGPTConfig
 
 
 class nGPTForCausalLM(nGPTPreTrainedModel, CausalLMModelMixin):
-    _tied_weights_keys = []  # nGPT does not tie embeddings and LM head
+    _tied_weights_keys = ["lm_head.weight"]
     base_model_class = nGPTModel
 
     def _init_model(self, config: nGPTConfig, **kwargs) -> None:
@@ -31,7 +31,11 @@ class nGPTForCausalLM(nGPTPreTrainedModel, CausalLMModelMixin):
         self.normalize_all_weights()
 
     def get_lm_logits(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        logits = self.lm_head(hidden_states)
+        logits = (
+            F.linear(hidden_states, self.transformer.wte.weight)
+            if self._tied_word_embeddings
+            else self.lm_head(hidden_states)
+        )
         # Apply sz scaling: effective_sz = sz * (init_value / init_scaling)
         effective_sz = self.sz * (self._sz_init_value / self._sz_init_scaling)
         logits = logits * effective_sz
@@ -60,7 +64,9 @@ class nGPTForCausalLM(nGPTPreTrainedModel, CausalLMModelMixin):
         _normalize_weight(self.transformer.wte.weight, dim=1)
 
         # LM head weights: each row is unit norm (input projection)
-        _normalize_weight(self.lm_head.weight, dim=1)
+        # When tied, lm_head shares wte's weight — already normalized above
+        if not self._tied_word_embeddings:
+            _normalize_weight(self.lm_head.weight, dim=1)
 
         # Per-layer weights
         for block in self.transformer.h:
