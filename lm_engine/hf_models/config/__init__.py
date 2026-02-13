@@ -10,7 +10,7 @@ from typing import Any, Callable
 from transformers import PretrainedConfig
 
 from ...utils import BaseArgs, divide_if_divisible
-from .mlp import _MLPArgs, _MoEArgs, _EnergyMLPArgs, _MoEEnergyArgs, _MoEEnergyModuleArgs
+from .mlp import _MLPArgs, _MoEArgs, _EnergyMLPArgs, _MoEEnergyArgs, _MoEEnergyModuleArgs, _MoEEnergyF5Args
 from .sequence_mixer import (
     _CausalConvolution,
     _GatedDeltaNetArgs,
@@ -83,6 +83,7 @@ _MLP_CONFIG_CLASSES = {
     "Energy_MLP": _EnergyMLPArgs,
     "MoE_Energy": _MoEEnergyArgs,
     "MoE_Energy_Module": _MoEEnergyModuleArgs,
+    "MoE_Energy_F5": _MoEEnergyF5Args,
 }
 
 
