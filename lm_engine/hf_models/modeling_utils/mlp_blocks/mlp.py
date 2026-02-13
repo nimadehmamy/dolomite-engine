@@ -78,31 +78,27 @@ class Energy_MLP(nn.Module):
         return out
 
     def _log_norms(self, out: torch.Tensor) -> None:
-        """Cache weight matrix norms and output norm for external tracking.
-
-        Values are kept as tensors to avoid .item() graph breaks under
-        torch.compile; conversion to Python floats happens in get_metrics().
-        """
-        with torch.no_grad():
-            w1_norm = self.W1.weight.norm()
-            w2_norm = self.W2.weight.norm()
-            w_total_norm = (w1_norm**2 + w2_norm**2).sqrt()
-
-            out_norm = out.norm(dim=-1).mean() if out.numel() > 0 else torch.zeros(1, device=out.device)
-
-            self._cached_metrics_tensors = {
-                "W1_norm": w1_norm,
-                "W2_norm": w2_norm,
-                "W_total_norm": w_total_norm,
-                "output_norm": out_norm,
-            }
+        """Save output tensor ref for lazy metric computation in get_metrics()."""
+        self._cached_output_for_metrics = out.detach()
 
     def get_metrics(self) -> dict[str, float] | None:
-        """Return cached metrics for external tracking (.item() called here, outside compile)."""
-        tensors = getattr(self, "_cached_metrics_tensors", None)
-        if tensors is None:
+        """Compute and return metrics (called outside compile)."""
+        out = getattr(self, "_cached_output_for_metrics", None)
+        if out is None:
             return None
-        return {k: v.item() for k, v in tensors.items()}
+
+        w1_norm = self.W1.weight.norm().item()
+        w2_norm = self.W2.weight.norm().item()
+        w_total_norm = (w1_norm**2 + w2_norm**2) ** 0.5
+        out_norm = out.norm(dim=-1).mean().item() if out.numel() > 0 else 0.0
+
+        self._cached_output_for_metrics = None
+        return {
+            "W1_norm": w1_norm,
+            "W2_norm": w2_norm,
+            "W_total_norm": w_total_norm,
+            "output_norm": out_norm,
+        }
 
 
     # def forward(self, x: torch.Tensor) -> torch.Tensor:

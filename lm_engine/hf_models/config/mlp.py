@@ -84,3 +84,21 @@ class _MoEEnergyF5Args(_EnergyMLPArgs):
 
     def model_post_init(self, __context: Any) -> None:
         assert self.mlp_type == "MoE_Energy_F5"
+
+
+class _GaussianBoltzmannMoEArgs(BaseArgs):
+    mlp_type: str = "GaussianBoltzmannMoE"
+    intermediate_size: int
+    activation_function: str = "gelu_pytorch_tanh"
+    dropout: float = 0
+    add_bias: bool = False
+    num_experts: int = 32
+    num_experts_per_tok: int = 2
+    normalized_topk: bool = True
+    use_det_normalization: bool = True       # include ½ log det(W^T W) in routing logits
+    use_mixing_coefficients: bool = True     # learnable GMM mixing weights π_e
+    diversity_lambda: float = 0.01           # cosine diversity penalty on W matrices
+    entropy_bonus_gamma: float = 0.0         # per-token routing entropy bonus
+
+    def model_post_init(self, __context: Any) -> None:
+        assert self.mlp_type == "GaussianBoltzmannMoE"

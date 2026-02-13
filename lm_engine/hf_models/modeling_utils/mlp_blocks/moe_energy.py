@@ -16,7 +16,7 @@ from ....enums import Kernel
 from ....kernels import is_kernel_allowed
 from ....utils import ProcessGroupManager
 from ...loss import add_aux_loss
-from ...parameter import mark_parameter_as_mup_learning_rate
+from ...parameter import mark_parameter_as_mup_learning_rate, mark_parameter_as_no_weight_decay
 from ..dropout import Dropout
 from ..linear import ParameterizedLinear
 from .mlp import _get_std_for_linear, Energy_MLP
@@ -26,44 +26,47 @@ from .moe import ParameterizedExperts, compute_bincount
 class _MoEMetricsMixin:
     """Mixin for caching and exposing MoE routing metrics to wandb.
 
-    Values are kept as tensors during forward to avoid .item() graph breaks
-    under torch.compile; conversion to Python floats happens in get_metrics().
+    Forward pass only saves raw tensors (compile-safe, no graph breaks).
+    All metric computation happens lazily in get_metrics(), which is called
+    from the training loop outside the compiled graph.
     """
 
     def _cache_routing_metrics(self, expert_frequency: torch.Tensor, router_logits: torch.Tensor) -> None:
-        """Cache routing metrics from forward pass for wandb logging."""
-        with torch.no_grad():
-            freqs = expert_frequency.float()
-            total = freqs.sum().clamp(min=1)
-            probs = freqs / total
-
-            # Expert utilization entropy (higher = more uniform)
-            entropy = -(probs * torch.log(probs + 1e-10)).sum()
-            max_entropy = math.log(self.num_experts)
-
-            # Load balance: E * min/max (1.0 = perfect)
-            load_balance = self.num_experts * probs.min() / probs.max().clamp(min=1e-10)
-
-            # Collapse rate: experts getting < 1% of tokens
-            collapse_rate = (probs < 0.01).sum()
-
-            self._cached_metrics_tensors = {
-                "routing_entropy": entropy,
-                "normalized_entropy": entropy / max_entropy if max_entropy > 0 else entropy * 0,
-                "load_balance": load_balance,
-                "expert_collapse_count": collapse_rate,
-            }
-
-            # Per-expert utilization
-            for i in range(self.num_experts):
-                self._cached_metrics_tensors[f"expert_{i}_freq"] = probs[i]
+        """Save raw tensors during forward for lazy metric computation."""
+        self._cached_expert_frequency = expert_frequency.detach()
 
     def get_metrics(self) -> dict[str, float] | None:
-        """Return cached routing metrics for wandb logging (.item() called here, outside compile)."""
-        tensors = getattr(self, "_cached_metrics_tensors", None)
-        if tensors is None:
+        """Compute and return routing metrics for wandb logging (called outside compile)."""
+        freq = getattr(self, "_cached_expert_frequency", None)
+        if freq is None:
             return None
-        return {k: v.item() for k, v in tensors.items()}
+
+        freqs = freq.float()
+        total = freqs.sum().clamp(min=1)
+        probs = freqs / total
+
+        entropy = -(probs * torch.log(probs + 1e-10)).sum()
+        max_entropy = math.log(self.num_experts)
+        load_balance = self.num_experts * probs.min().item() / max(probs.max().item(), 1e-10)
+        collapse_rate = (probs < 0.01).sum()
+
+        metrics = {
+            "routing_entropy": entropy.item(),
+            "normalized_entropy": (entropy / max_entropy).item() if max_entropy > 0 else 0.0,
+            "load_balance": load_balance,
+            "expert_collapse_count": collapse_rate.item(),
+        }
+
+        for i in range(self.num_experts):
+            metrics[f"expert_{i}_freq"] = probs[i].item()
+
+        # F5-specific: include beta_r if available
+        log_beta = getattr(self, "log_beta_r", None)
+        if log_beta is not None:
+            metrics["beta_r"] = torch.exp(log_beta).item()
+
+        self._cached_expert_frequency = None
+        return metrics
 
 
 class MoE_Energy(_MoEMetricsMixin, nn.Module):
@@ -768,7 +771,7 @@ class MoE_Energy_F5(_MoEMetricsMixin, nn.Module):
         # Boltzmann inverse temperature (1D tensor for FSDP compatibility)
         _init_log_beta = math.log(1.0 / boltzmann_temperature)
         if learnable_temperature:
-            self.log_beta_r = nn.Parameter(torch.tensor([_init_log_beta]))
+            self.log_beta_r = mark_parameter_as_no_weight_decay(nn.Parameter(torch.tensor([_init_log_beta])))
         else:
             self.register_buffer("log_beta_r", torch.tensor([_init_log_beta]))
 
@@ -995,10 +998,9 @@ class MoE_Energy_F5(_MoEMetricsMixin, nn.Module):
         else:
             moe_output, expert_frequency, router_logits = self._forward_inference(hidden_states)
 
-        # Cache routing metrics for wandb (including F5-specific: beta_r)
+        # Cache routing metrics for wandb (beta_r included automatically via get_metrics)
         if self.training:
             self._cache_routing_metrics(expert_frequency, router_logits)
-            self._cached_metrics_tensors["beta_r"] = torch.exp(self.log_beta_r).detach()
 
         if self.shared_intermediate_size is None:
             hidden_states = moe_output
@@ -1162,4 +1164,274 @@ class MoE_Energy_F5(_MoEMetricsMixin, nn.Module):
                 num_elements -= parameter.numel()
                 num_elements += (parameter.numel() * self.top_k) // self.num_experts
 
+        return num_elements
+
+
+# ==============================================================================
+# Gaussian Boltzmann MoE
+# ==============================================================================
+
+
+class GaussianBoltzmannMoE(_MoEMetricsMixin, nn.Module):
+    """Mixture-of-Experts with Gaussian energy experts and Boltzmann routing.
+
+    Each expert defines a Gaussian basin of attraction in hidden-state space:
+        E_e(h) = ||W_e (h - μ_e)||²
+
+    Routing logits (proper GMM assignment):
+        ℓ_e = log(π_e) + ½ log det(W_e^T W_e) - ||W_e(h - μ_e)||²
+
+    Expert output (negative energy gradient):
+        f_e(h) = -2 W_e^T W_e (h - μ_e)
+
+    Energy compatibility is EXACT:  -∇F(h) = Σ_e w_e(h) · f_e(h)
+    where F(h) = -logsumexp_e(ℓ_e) is the GMM free energy.
+    """
+
+    def __init__(
+        self,
+        hidden_size: int,
+        intermediate_size: int,
+        num_experts: int,
+        num_experts_per_tok: int,
+        normalized_topk: bool,
+        activation_function: str,
+        add_bias: bool,
+        dropout: float,
+        init_method: str,
+        initializer_range: float,
+        m_width: float,
+        num_layers: int,
+        use_padding_free_transformer: bool,
+        # Gaussian-specific
+        use_det_normalization: bool = True,
+        use_mixing_coefficients: bool = True,
+        diversity_lambda: float = 0.01,
+        entropy_bonus_gamma: float = 0.0,
+    ):
+        super().__init__()
+
+        self.num_experts = num_experts
+        self.top_k = num_experts_per_tok
+        self.hidden_size = hidden_size
+        self.intermediate_size = intermediate_size
+        self.normalized_topk = normalized_topk
+        self.use_padding_free_transformer = use_padding_free_transformer
+        self.use_det_normalization = use_det_normalization
+        self.use_mixing_coefficients = use_mixing_coefficients
+        self.diversity_lambda = diversity_lambda
+        self.entropy_bonus_gamma = entropy_bonus_gamma
+
+        std = _get_std_for_linear(initializer_range, init_method, m_width)
+
+        # Per-expert precision factor W_e: (E, m, d)
+        self.expert_W = nn.Parameter(
+            torch.randn(num_experts, intermediate_size, hidden_size) * std
+        )
+
+        # Per-expert centroid μ_e: (E, d)
+        self.centroids = nn.Parameter(
+            torch.randn(num_experts, hidden_size) * std
+        )
+
+        # GMM mixing logits: π_e = softmax(α_e)
+        if use_mixing_coefficients:
+            self.mixing_logits = nn.Parameter(torch.zeros(num_experts))
+            mark_parameter_as_no_weight_decay(self.mixing_logits)
+
+        self.dropout = Dropout(dropout)
+
+        self.is_hopper_or_newer_gpu = (
+            torch.cuda.is_available()
+            and torch.cuda.get_device_capability(torch.cuda.current_device()) >= (9, 0)
+        )
+
+    # ------------------------------------------------------------------
+    # Core computations
+    # ------------------------------------------------------------------
+
+    def _compute_energies_and_projections(
+        self, h: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """E_e(h) = ||W_e(h - μ_e)||² and projections W_e(h - μ_e).
+
+        Args:
+            h: (N, d)
+        Returns:
+            energies: (N, E), projected: (N, E, m)
+        """
+        diff = h.unsqueeze(1) - self.centroids.unsqueeze(0)  # (N, E, d)
+        projected = torch.einsum("ned,emd->nem", diff, self.expert_W)  # (N, E, m)
+        energies = (projected * projected).sum(dim=-1)  # (N, E)
+        return energies, projected
+
+    def _compute_expert_outputs(self, projected: torch.Tensor) -> torch.Tensor:
+        """f_e(h) = -2 W_e^T [W_e(h - μ_e)].
+
+        Args:
+            projected: (N, E, m)
+        Returns:
+            outputs: (N, E, d)
+        """
+        return -2.0 * torch.einsum("nem,emd->ned", projected, self.expert_W)
+
+    def _compute_log_det_half(self) -> torch.Tensor:
+        """½ log det(W_e^T W_e) for each expert. Returns (E,)."""
+        WtW = torch.bmm(
+            self.expert_W.transpose(1, 2),  # (E, d, m)
+            self.expert_W,                   # (E, m, d)
+        )  # (E, d, d)
+        WtW = WtW + 1e-6 * torch.eye(
+            self.hidden_size, device=WtW.device, dtype=WtW.dtype
+        ).unsqueeze(0)
+        _sign, logabsdet = torch.linalg.slogdet(WtW)
+        return 0.5 * logabsdet
+
+    def _compute_routing_logits(self, energies: torch.Tensor) -> torch.Tensor:
+        """ℓ_e = log(π_e) + ½ log det(W_e^T W_e) - E_e(h)."""
+        logits = -energies  # (N, E)
+
+        if self.use_mixing_coefficients:
+            log_pi = torch.log_softmax(self.mixing_logits, dim=0)
+            logits = logits + log_pi.unsqueeze(0)
+
+        if self.use_det_normalization:
+            log_det_half = self._compute_log_det_half()
+            logits = logits + log_det_half.unsqueeze(0)
+
+        return logits
+
+    # ------------------------------------------------------------------
+    # Auxiliary losses
+    # ------------------------------------------------------------------
+
+    def _compute_diversity_loss(self) -> torch.Tensor:
+        """Cosine similarity penalty: mean_{i!=j} cos²(W_i, W_j)."""
+        W_flat = self.expert_W.flatten(1)  # (E, m*d)
+        W_norm = F.normalize(W_flat, dim=1)
+        cos_sim = W_norm @ W_norm.T
+        mask = ~torch.eye(self.num_experts, device=cos_sim.device, dtype=torch.bool)
+        return (cos_sim[mask] ** 2).mean()
+
+    def _compute_entropy_bonus(self, logits: torch.Tensor) -> torch.Tensor:
+        """Per-token routing entropy bonus (negative = maximize entropy)."""
+        weights = F.softmax(logits.float(), dim=-1)
+        H = -(weights * torch.log(weights + 1e-10)).sum(dim=-1)
+        return -H.mean()
+
+    def _compute_switch_loss(
+        self, logits: torch.Tensor, probs: torch.Tensor, expert_frequency: torch.Tensor
+    ) -> torch.Tensor:
+        logits = logits.view(-1, logits.size(-1))
+        probs = probs.view(-1, probs.size(-1))
+        num_experts = logits.size(1)
+        acc_probs = probs.sum(0)
+        expert_frequency = expert_frequency.float()
+
+        if ProcessGroupManager.is_initialized() and ProcessGroupManager.get_data_parallel_world_size() > 1:
+            expert_frequency = all_reduce(
+                expert_frequency, reduceOp="sum", group=ProcessGroupManager.get_data_parallel_group()
+            )
+
+        switch_loss = (
+            num_experts * (F.normalize(acc_probs, p=1, dim=0) * F.normalize(expert_frequency, p=1, dim=0)).sum()
+        )
+        z_loss = (torch.logsumexp(logits, dim=-1) ** 2).mean()
+        return (switch_loss + 0.1 * z_loss).type_as(logits)
+
+    def _get_topk(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        if self.top_k == 1:
+            x, indices = x.max(dim=-1, keepdim=True)
+        else:
+            x, indices = x.topk(self.top_k, dim=-1)
+        return x, indices
+
+    # ------------------------------------------------------------------
+    # Forward
+    # ------------------------------------------------------------------
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        if not self.use_padding_free_transformer:
+            batch_size, sequence_length, _ = hidden_states.shape
+
+        h = hidden_states.view(-1, self.hidden_size)
+
+        # Energies and projections (reused for outputs — no wasted compute)
+        energies, projected = self._compute_energies_and_projections(h)
+        all_outputs = self._compute_expert_outputs(projected)  # (N, E, d)
+
+        # GMM routing logits
+        logits = self._compute_routing_logits(energies)  # (N, E)
+
+        # Top-k sparsification
+        topk_logits, topk_indices = self._get_topk(logits)
+        if self.normalized_topk:
+            topk_weights = F.softmax(topk_logits.float(), dim=-1).type_as(h)
+        else:
+            full_weights = F.softmax(logits.float(), dim=-1).type_as(h)
+            topk_weights = full_weights.gather(1, topk_indices)
+
+        # Aggregate selected expert outputs
+        idx_exp = topk_indices.unsqueeze(-1).expand(-1, -1, self.hidden_size)
+        selected = all_outputs.gather(1, idx_exp)
+        hidden_states = (topk_weights.unsqueeze(-1) * selected).sum(dim=1)
+
+        # Expert frequency for metrics and aux loss
+        with torch.no_grad():
+            sorted_expert_idxs = topk_indices.flatten().sort()[0]
+            expert_frequency = compute_bincount(
+                x=sorted_expert_idxs,
+                size=self.num_experts,
+                use_continuous_count=(
+                    self.is_hopper_or_newer_gpu and is_kernel_allowed(Kernel.continuous_count)
+                ),
+            )
+
+        if self.training:
+            self._cache_routing_metrics(expert_frequency, logits)
+
+        if not self.use_padding_free_transformer:
+            hidden_states = hidden_states.reshape(batch_size, sequence_length, self.hidden_size)
+
+        hidden_states = self.dropout(hidden_states)
+
+        # Auxiliary losses
+        if self.training:
+            aux_loss = self._compute_switch_loss(
+                logits=logits,
+                probs=torch.softmax(logits, dim=-1),
+                expert_frequency=expert_frequency,
+            )
+            if self.diversity_lambda > 0:
+                aux_loss = aux_loss + self.diversity_lambda * self._compute_diversity_loss()
+            if self.entropy_bonus_gamma > 0:
+                aux_loss = aux_loss + self.entropy_bonus_gamma * self._compute_entropy_bonus(logits)
+            add_aux_loss(aux_loss)
+
+        return hidden_states
+
+    # ------------------------------------------------------------------
+    # Energy computation
+    # ------------------------------------------------------------------
+
+    def energy_per_token(self, x: torch.Tensor) -> torch.Tensor:
+        """GMM free energy: F(h) = -logsumexp_e(ℓ_e)."""
+        h = x.view(-1, self.hidden_size)
+        energies, _ = self._compute_energies_and_projections(h)
+        logits = self._compute_routing_logits(energies)
+        free_energy = -torch.logsumexp(logits, dim=-1)
+        if x.dim() == 3:
+            free_energy = free_energy.view(x.shape[0], x.shape[1])
+        return free_energy
+
+    def get_num_active_parameters(self) -> int:
+        num_elements = sum(p.numel() for p in self.parameters())
+        # expert_W: only top_k of num_experts active per token
+        expert_w_numel = self.expert_W.numel()
+        num_elements -= expert_w_numel
+        num_elements += (expert_w_numel * self.top_k) // self.num_experts
+        # centroids: only top_k active
+        centroid_numel = self.centroids.numel()
+        num_elements -= centroid_numel
+        num_elements += (centroid_numel * self.top_k) // self.num_experts
         return num_elements

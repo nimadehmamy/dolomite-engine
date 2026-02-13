@@ -261,24 +261,26 @@ class EnergyAttention_QK(nn.Module):
         return hidden_states
 
     def _log_norms(self, out: torch.Tensor, W_Q: torch.Tensor) -> None:
-        """Cache weight norms and output norm for external tracking.
-
-        Values are kept as tensors to avoid .item() graph breaks under
-        torch.compile; conversion to Python floats happens in get_metrics().
-        """
-        with torch.no_grad():
-            self._cached_metrics_tensors = {
-                "c_attn_norm": self.c_attn.weight.norm(),
-                "W_Q_norm": W_Q.norm(),
-                "output_norm": out.norm(dim=-1).mean(),
-            }
+        """Save output and W_Q refs for lazy metric computation."""
+        self._cached_out_for_metrics = out.detach()
+        self._cached_WQ_for_metrics = W_Q.detach()
 
     def get_metrics(self) -> dict[str, float] | None:
-        """Return cached metrics for external tracking (.item() called here, outside compile)."""
-        tensors = getattr(self, "_cached_metrics_tensors", None)
-        if tensors is None:
+        """Compute and return metrics (called outside compile)."""
+        out = getattr(self, "_cached_out_for_metrics", None)
+        if out is None:
             return None
-        return {k: v.item() for k, v in tensors.items()}
+
+        W_Q = self._cached_WQ_for_metrics
+        metrics = {
+            "c_attn_norm": self.c_attn.weight.norm().item(),
+            "W_Q_norm": W_Q.norm().item(),
+            "output_norm": out.norm(dim=-1).mean().item(),
+        }
+
+        self._cached_out_for_metrics = None
+        self._cached_WQ_for_metrics = None
+        return metrics
 
     def energy_per_token(self, x: torch.Tensor) -> torch.Tensor:
         """Compute energy per token for this attention layer."""
