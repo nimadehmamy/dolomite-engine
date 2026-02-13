@@ -81,7 +81,11 @@ model_args:
         use_det_normalization: true
         use_mixing_coefficients: true
         diversity_lambda: 0.01
-        entropy_bonus_gamma: 0.0
+        entropy_bonus_gamma: 0.1
+        mixing_entropy_gamma: 0.1
+        centroid_repulsion_lambda: 0.01
+        bias_based_balancing: true
+        bias_update_alpha: 0.001
       - activation_function: swiglu
         add_bias: false
         intermediate_size: 512
