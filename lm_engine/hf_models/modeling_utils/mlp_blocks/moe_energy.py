@@ -23,7 +23,50 @@ from .mlp import _get_std_for_linear, Energy_MLP
 from .moe import ParameterizedExperts, compute_bincount
 
 
-class MoE_Energy(nn.Module):
+class _MoEMetricsMixin:
+    """Mixin for caching and exposing MoE routing metrics to wandb.
+
+    Values are kept as tensors during forward to avoid .item() graph breaks
+    under torch.compile; conversion to Python floats happens in get_metrics().
+    """
+
+    def _cache_routing_metrics(self, expert_frequency: torch.Tensor, router_logits: torch.Tensor) -> None:
+        """Cache routing metrics from forward pass for wandb logging."""
+        with torch.no_grad():
+            freqs = expert_frequency.float()
+            total = freqs.sum().clamp(min=1)
+            probs = freqs / total
+
+            # Expert utilization entropy (higher = more uniform)
+            entropy = -(probs * torch.log(probs + 1e-10)).sum()
+            max_entropy = math.log(self.num_experts)
+
+            # Load balance: E * min/max (1.0 = perfect)
+            load_balance = self.num_experts * probs.min() / probs.max().clamp(min=1e-10)
+
+            # Collapse rate: experts getting < 1% of tokens
+            collapse_rate = (probs < 0.01).sum()
+
+            self._cached_metrics_tensors = {
+                "routing_entropy": entropy,
+                "normalized_entropy": entropy / max_entropy if max_entropy > 0 else entropy * 0,
+                "load_balance": load_balance,
+                "expert_collapse_count": collapse_rate,
+            }
+
+            # Per-expert utilization
+            for i in range(self.num_experts):
+                self._cached_metrics_tensors[f"expert_{i}_freq"] = probs[i]
+
+    def get_metrics(self) -> dict[str, float] | None:
+        """Return cached routing metrics for wandb logging (.item() called here, outside compile)."""
+        tensors = getattr(self, "_cached_metrics_tensors", None)
+        if tensors is None:
+            return None
+        return {k: v.item() for k, v in tensors.items()}
+
+
+class MoE_Energy(_MoEMetricsMixin, nn.Module):
     """Mixture-of-Experts where each expert is an Energy_MLP.
 
     Energy_MLP forward per expert:
@@ -58,11 +101,13 @@ class MoE_Energy(nn.Module):
         m_width: float,
         num_layers: int,
         use_padding_free_transformer: bool,
+        stop_gradient_routing: bool = False,
     ) -> MoE_Energy:
         super().__init__()
 
         self.num_experts = num_experts
         self.top_k = num_experts_per_tok
+        self.stop_gradient_routing = stop_gradient_routing
         self.use_padding_free_transformer = use_padding_free_transformer
         self.hidden_size = hidden_size
         self.intermediate_size = intermediate_size
@@ -138,6 +183,10 @@ class MoE_Energy(nn.Module):
         router_logits, router_weights, selected_experts = self._compute_routing_weights(hidden_states)
         moe_output, expert_frequency = self._compute_experts(hidden_states, router_weights, selected_experts)
 
+        # Cache routing metrics for wandb
+        if self.training:
+            self._cache_routing_metrics(expert_frequency, router_logits)
+
         if self.shared_intermediate_size is None:
             hidden_states = moe_output
         else:
@@ -201,6 +250,11 @@ class MoE_Energy(nn.Module):
 
         # Gather gate values for sorted tokens
         batch_gates = router_weights.flatten()[sorted_scattered_idxs]
+
+        # Stop-gradient: detach routing weights so expert gradients don't flow
+        # through the router. Makes MoE energy-compatible (router gradient residual = 0).
+        if self.stop_gradient_routing:
+            batch_gates = batch_gates.detach()
 
         # Gather input tokens in expert order
         x_sorted = hidden_states[batch_index]
@@ -321,7 +375,7 @@ class MoE_Energy(nn.Module):
         return num_elements
 
 
-class MoE_Energy_Module(nn.Module):
+class MoE_Energy_Module(_MoEMetricsMixin, nn.Module):
     """Mixture-of-Experts using actual Energy_MLP module instances as experts.
 
     Unlike MoE_Energy (which uses ParameterizedExperts 3D tensors), this variant
@@ -428,6 +482,10 @@ class MoE_Energy_Module(nn.Module):
         moe_output, expert_frequency = self._compute_experts(
             hidden_states, router_weights, selected_experts, cached_W1x
         )
+
+        # Cache routing metrics for wandb
+        if self.training:
+            self._cache_routing_metrics(expert_frequency, router_logits)
 
         if self.shared_intermediate_size is None:
             hidden_states = moe_output
@@ -647,7 +705,7 @@ class MoE_Energy_Module(nn.Module):
         return num_elements
 
 
-class MoE_Energy_F5(nn.Module):
+class MoE_Energy_F5(_MoEMetricsMixin, nn.Module):
     """Mixture-of-Experts with Inference-Efficient Boltzmann routing (F5).
 
     Dual-mode forward:
@@ -936,6 +994,11 @@ class MoE_Energy_F5(nn.Module):
             moe_output, expert_frequency, router_logits = self._forward_train(hidden_states)
         else:
             moe_output, expert_frequency, router_logits = self._forward_inference(hidden_states)
+
+        # Cache routing metrics for wandb (including F5-specific: beta_r)
+        if self.training:
+            self._cache_routing_metrics(expert_frequency, router_logits)
+            self._cached_metrics_tensors["beta_r"] = torch.exp(self.log_beta_r).detach()
 
         if self.shared_intermediate_size is None:
             hidden_states = moe_output

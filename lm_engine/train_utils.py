@@ -12,6 +12,7 @@ from .enums import GradientCheckpointingMethod
 from .hf_models import CommonConfig, is_custom_model
 from .hf_models.modeling_utils import is_glu
 from .hf_models.modeling_utils.mlp_blocks.mlp import Energy_MLP
+from .hf_models.modeling_utils.mlp_blocks.moe_energy import _MoEMetricsMixin
 from .hf_models.modeling_utils.sequence_mixer_blocks.energy_attention import EnergyAttention_QK
 from .utils import (
     Accelerator,
@@ -83,8 +84,18 @@ def track_metrics(
                     for metric_name, value in metrics.items():
                         energy_mlp_metrics[f"{name}/{metric_name}"] = value
 
+        # Track MoE routing metrics (expert utilization, entropy, beta_r, etc.)
+        moe_metrics = {}
+        for name, module in model_container[0].named_modules():
+            if isinstance(module, _MoEMetricsMixin):
+                metrics = module.get_metrics()
+                if metrics is not None:
+                    for metric_name, value in metrics.items():
+                        moe_metrics[f"{name}/{metric_name}"] = value
+
         metrics_tracker.update({f"model/scale_ff/{k}": v for k, v in scale_ff_values.items()})
         metrics_tracker.update({f"model/energy_mlp/{k}": v for k, v in energy_mlp_metrics.items()})
+        metrics_tracker.update({f"model/moe/{k}": v for k, v in moe_metrics.items()})
         # Note: EnergyAttention metrics are also added to energy_mlp_metrics dict for simplicity
     
     # experiments tracker
