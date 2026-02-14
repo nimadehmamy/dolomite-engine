@@ -1305,15 +1305,14 @@ class GaussianBoltzmannMoE(_MoEMetricsMixin, nn.Module):
 
     def _compute_log_det_half(self) -> torch.Tensor:
         """½ log det(W_e^T W_e) for each expert. Returns (E,)."""
-        WtW = torch.bmm(
-            self.expert_W.transpose(1, 2),  # (E, d, m)
-            self.expert_W,                   # (E, m, d)
-        )  # (E, d, d)
+        # slogdet requires float32; cast up then back
+        W = self.expert_W.float()
+        WtW = torch.bmm(W.transpose(1, 2), W)  # (E, d, d)
         WtW = WtW + 1e-6 * torch.eye(
-            self.hidden_size, device=WtW.device, dtype=WtW.dtype
+            self.hidden_size, device=WtW.device
         ).unsqueeze(0)
         _sign, logabsdet = torch.linalg.slogdet(WtW)
-        return 0.5 * logabsdet
+        return (0.5 * logabsdet).type_as(self.expert_W)
 
     def _compute_routing_logits(self, energies: torch.Tensor) -> torch.Tensor:
         """ℓ_e = log(π_e) + ½ log det(W_e^T W_e) - E_e(h) [+ b_e]."""
