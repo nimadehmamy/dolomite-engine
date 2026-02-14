@@ -86,6 +86,9 @@ model_args:
         centroid_repulsion_lambda: 0.01
         bias_based_balancing: true
         bias_update_alpha: 0.001
+        kl_distillation: true
+        distillation_weight: 0.01
+        use_gmm_at_inference: false
       - activation_function: swiglu
         add_bias: false
         intermediate_size: 512
