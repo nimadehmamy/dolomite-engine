@@ -413,3 +413,19 @@ Axes to sweep (in priority order):
 - [ ] **Tell colleagues `sinkhorn_persist_mu: true` + `sinkhorn_mu_iters: <layer_iterations>`
       is REQUIRED** for pure/recurrence-heavy stacks. This supersedes the earlier
       "sinkhorn for hybrids only" note, which was based on the pre-fix measurements.
+
+## Sign-convention unification (post-deadline)
+
+- [ ] **Make the stored energy BE the state energy `S_i = -overlap`, and default `e_sign="neg"` for
+      both expert kinds.** Full proposal, risks and sequencing in
+      `experiments/boltzmann-moe/SIGN_CONVENTION_UNIFICATION.md`.
+      **Not a bug** — with today's `e_sign_override`s the arms implement the Boltzmann form
+      correctly. It is a naming/defaults inconsistency: the variable called `E_k` holds `-S_i` for
+      hopfield and `+S_i` for w1w2, so the correct `e_sign` differs per kind and every config must
+      carry an override (CLAUDE.md pre-flight 8).
+      ⚠ **Requires a config-version guard**: every existing checkpoint stores
+      `e_sign_override: "pos"` for hopfield, which becomes WRONG once the storage sign flips.
+      Without the guard every published number re-evaluates with an inverted router.
+      Gate on a bit-identity test (tolerance 0, this is a pure relabelling) modelled on
+      `scripts/test_logits_refactor_equiv_20260916.py`.
+      Do NOT touch the two live 61035-step arms; they must finish on current code.
