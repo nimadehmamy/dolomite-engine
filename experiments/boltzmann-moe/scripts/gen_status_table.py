@@ -32,6 +32,7 @@ ROLES = {
  'abl_E_134M_6G1x6E_baseEGPT':         ('134M base EGPT, iso-active','ABLATION E'),
  'abl_F_134M_6G_dense_isoactive':      ('134M GPT-only, iso-active','ABLATION F'),
  'abl_I_134M_w1w2_sparse_surr_projUncon': ('134M w1w2, unconstrained proj','ABLATION I'),
+ 'abl_R_134M_hyb_rnorm_none':           ('134M hybrid, routing\\_norm=none','ABLATION R'),
  'abl_G_400M_6G1x6E1x6E':              ('400M two recurrent energy blocks','ABLATION G'),
  'abl_G_400M_6G1x6S1x6S':              ('400M two recurrent Switch blocks','ABLATION G'),
  'abl_H_400M_6G6E_deep':               ('400M deep energy, no recurrence','ABLATION H'),
@@ -86,7 +87,34 @@ def arch(pc):
         out.append(f"{n}{ch}" if it==1 else f"{n}x{it}{ch}"); i+=n
     return "".join(out)
 
-def metrics(sp, tot=None):
+ABBREV = [("recurrence", "rec"), ("recurrent", "rec"),
+          ("surrogate", "surr"), ("unconstrained", "unc")]
+
+def shorten(label):
+    """Abbreviate the long words in column 1 so the table fits; defined in the caption.
+
+    Requested 2026-09-22. Applied to the LABEL only, never to the arch/expert columns, and done
+    here rather than by hand so it survives a regenerate. Longest-first so "recurrence" is not
+    mangled into "recent" by the "recurrent" rule.
+    """
+    for long, short in ABBREV:
+        label = label.replace(long, short)
+    return label
+
+def sched(y):
+    """'WSD' if there is a constant phase, else the decay style.
+
+    Added 2026-09-22 at the user's request, and it immediately mattered: the 400M tier MIXES
+    schedulers. Five arms run 2,000 warmup + 53,000 CONSTANT + 6,035 decay (WSD, decaying over the
+    last 10%); eighteen run 2,000 + 0 + full decay (pure cosine, decaying over 97%). Those give
+    different final-LR trajectories, so a loss gap measured ACROSS schedulers is not clean -- which
+    is exactly what the 400M recurrence comparison does.
+    """
+    ls = y.get('lr_scheduler_args') or {}
+    st = ls.get('lr_decay_style', '?')
+    return 'WSD' if (ls.get('num_constant_steps') or 0) > 0 else st
+
+def metrics(sp, tot=None, prefix='unsharded'):
     """Newest COMPLETE result for the END-OF-RUN checkpoint, and ONLY that one.
 
     2026-09-20: this used to glob `unsharded*`, which matches ANY step's unsharded directory. The
@@ -101,11 +129,16 @@ def metrics(sp, tot=None):
     arm's number -- return None so the row shows as unevaluated, which is true, instead of showing a
     number that is wrong.
     """
+    # `prefix` selects WHICH EXPORT of the arm to read. 2026-09-22 (HANDOFF §21): every
+    # `unsharded*` export was evaluated on the DENSE all-K path with exact ORACLE routing, because
+    # _sparse_active is never flipped outside the training loop. The `sparseeval*` twin holds the
+    # SAME weights (hard-linked) with sparse_start_step: 0, i.e. the PROXY-SPARSE path -- what the
+    # model actually delivers at its claimed FLOPs. Both are reported; neither is dropped.
     pats = []
     if tot is not None:
-        pats = [f'{sp}/unsharded_step{tot}', f'{sp}/unsharded']
+        pats = [f'{sp}/{prefix}_step{tot}', f'{sp}/{prefix}']
     else:
-        pats = [f'{sp}/unsharded*']
+        pats = [f'{sp}/{prefix}*']
     cands = []
     for d in pats:
         cands = glob.glob(f'{d}/harness_results_merged_*.json') or \
@@ -157,33 +190,38 @@ for a,(label,role) in ROLES.items():
     elif sb: kind,K,k='swiglu',sb[0]['num_experts'],sb[0]['num_experts_per_tok']
     else:   kind,K,k='dense',None,None
     mt=metrics(sp, tot) or {}
+    # The proxy-sparse twin. Only meaningful for an arm that HAS a sparse router; a dense arm has
+    # no sparseeval export and correctly reports '--'.
+    ms=metrics(sp, tot, prefix='sparseeval') or {}
+    mt['avg11_sps']=ms.get('avg11'); mt['ppl_sps']=ms.get('ppl')
+    mt['mmlu_sps']=ms.get('mmlu');   mt['gsm_sps']=ms.get('gsm')
     _m = sparse_mech(pc)
     if _m:
         label = f"{label}, {_m}"
-    rows.append(dict(arm=a,label=label,role=role,arch=arch(pc),kind=kind,K=K,k=k,
-                     tot=totp,act=act,fl=fl,state=state,**mt))
+    rows.append(dict(arm=a,label=shorten(label),role=role,arch=arch(pc),kind=kind,K=K,k=k,
+                     tot=totp,act=act,fl=fl,state=state,sched=sched(c),**mt))
 
 ap=argparse.ArgumentParser(); ap.add_argument('--latex',action='store_true'); args=ap.parse_args()
 f=lambda v,p=2: '--' if v is None else f'{v:.{p}f}'
 if not args.latex:
     print(f"{'label':30s} {'arch':12s} {'expert':9s} {'K':>3s} {'k':>2s} {'TOT':>7s} {'ACT':>7s} "
-          f"{'FLOPwt':>7s} {'state':>14s} {'Avg11':>6s} {'ppl':>7s} {'MMLU':>6s} {'GSM':>5s}  role")
+          f"{'FLOPwt':>7s} {'sched':>7s} {'state':>14s} {'Avg11':>6s} {'A11sps':>6s} {'ppl':>7s} {'MMLU':>6s} {'GSM':>5s}  role")
     for r in sorted(rows,key=lambda r:(r['role']!='main',r['label'])):
         print(f"{r['label']:30s} {r['arch']:12s} {r['kind']:9s} {str(r['K'] or '-'):>3s} {str(r['k'] or '-'):>2s} "
-              f"{f(r['tot'],1):>7s} {f(r['act'],1):>7s} {f(r['fl'],1):>7s} {r['state']:>14s} "
-              f"{f(r.get('avg11')):>6s} {f(r.get('ppl')):>7s} {f(r.get('mmlu')):>6s} {f(r.get('gsm')):>5s}  {r['role']}")
+              f"{f(r['tot'],1):>7s} {f(r['act'],1):>7s} {f(r['fl'],1):>7s} {r.get('sched','?'):>7s} {r['state']:>14s} "
+              f"{f(r.get('avg11')):>6s} {f(r.get('avg11_sps')):>6s} {f(r.get('ppl')):>7s} {f(r.get('mmlu')):>6s} {f(r.get('gsm')):>5s}  {r['role']}")
 else:
     print(r"% GENERATED by experiments/boltzmann-moe/scripts/gen_status_table.py --latex")
-    print(r"\begin{tabular}{llrrrrrrrrr}")
+    print(r"\begin{tabular}{llrrrrlrrrrrr}")
     print(r"\toprule")
-    print(r"Arm & Arch & $K$ & $k$ & Total & Active & Progress & Avg11 & ppl & MMLU & GSM8K \\")
+    print(r"Arm & Arch & $K$ & $k$ & Total & Active & Sched & Progress & Avg11$^{\mathrm{orc}}$ & Avg11$^{\mathrm{sps}}$ & ppl & MMLU & GSM8K \\")
     print(r"\midrule")
     last=None
     for r in sorted(rows,key=lambda r:(r['role']!='main',r['label'])):
         if r['role']!=last:
-            print(r"\midrule \multicolumn{11}{l}{\emph{" + r['role'].replace('_',' ') + r"}} \\")
+            print(r"\midrule \multicolumn{13}{l}{\emph{" + r['role'].replace('_',' ') + r"}} \\")
             last=r['role']
         print(f"{r['label']} & \\texttt{{{r['arch']}}} & {r['K'] or '--'} & {r['k'] or '--'} & "
-              f"{f(r['tot'],0)}M & {f(r['act'],0)}M & {r['state'].replace('%',r'\%')} & "
-              f"{f(r.get('avg11'))} & {f(r.get('ppl'))} & {f(r.get('mmlu'))} & {f(r.get('gsm'))} \\\\")
+              f"{f(r['tot'],0)}M & {f(r['act'],0)}M & {r.get('sched','?')} & {r['state'].replace('%',r'\%')} & "
+              f"{f(r.get('avg11'))} & {f(r.get('avg11_sps'))} & {f(r.get('ppl'))} & {f(r.get('mmlu'))} & {f(r.get('gsm'))} \\\\")
     print(r"\bottomrule"); print(r"\end{tabular}")
