@@ -43,6 +43,19 @@ for sd in sorted(glob.glob("results/**/sparseeval*", recursive=True)):
         continue
     od = os.path.join(os.path.dirname(sd),
                       os.path.basename(sd).replace("sparseeval", "unsharded"))
+    # The name-mangled guess is right for the gate-bug arms (sparseeval_step122070 <->
+    # unsharded_step122070) but WRONG for the iclr_sink post-hoc exports, whose oracle sibling is
+    # `unsharded` / `unsharded_mucal` / `unsharded_mucal2`, not `unsharded_r16m512`. The launch
+    # ledger records the oracle dir explicitly, so prefer it and fall back to the guess.
+    if not glob.glob(od + "/harness_results*.json"):
+        try:
+            for ln in open("logs/sparse_eval_ledger.tsv"):
+                f = ln.rstrip("\n").split("\t")
+                if len(f) >= 6 and f[4] and os.path.normpath(f[4]) == os.path.normpath(sd):
+                    if glob.glob(f[5] + "/harness_results*.json"):
+                        od = f[5]; break
+        except OSError:
+            pass
     sf, of = newest(sd + "/harness_results*.json"), newest(od + "/harness_results*.json")
     sg, og = newest(sd + "/gsm8k/harness_results*.json"), None
     for cand in (od + "/gsm8k_raw*.json", os.path.dirname(od) + "/gsm8k_step*/gsm8k_raw*.json"):
