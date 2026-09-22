@@ -346,3 +346,27 @@ reject, and it would be correct.
 around the OOM it caused. A comment that explains why a workaround is needed is a comment describing
 a bug; it should have been escalated, not accommodated. Worth grepping the tree for other
 "reloads with"/"falls back to" comments that encode a silent behavioural difference.
+
+## 2026-09-22 (f) — `tab:cost`'s "proxy router" row mixes two different models
+
+Distinct from (e) and in the MAIN paper, not the appendix.
+
+`tab:cost` row "Boltzmann, $K{=}32$, proxy router" reports Avg11 **44.58**. That number comes from
+`iclr_hop_K32_top2_sink/unsharded/`, an export with `sparse_forward` absent and `proxy_rank: 0` —
+i.e. **no proxy at all**. The arm's real proxy export (`unsharded_sparse_r16m512`, r=16, p=2 of 32)
+had never been evaluated. So the row's cost columns describe the proxy model and its accuracy column
+describes the dense one.
+
+A reviewer asking "what does the proxy cost you in accuracy?" would find the table answers
+"nothing", because the accuracy shown is the accuracy without it. Two further arms
+(`iclr_big_hop_sandwich_sink`, `pure_hop_T12_sink` — the source of the 40.96 pure number) have the
+same unevaluated-sparse-export pattern.
+
+**Required:** no row may combine a cost measured on one export with an accuracy measured on another.
+Either both from the sparse export, or the row states explicitly that accuracy is oracle-routed and
+gives the proxy's accuracy separately. Evals for all three sparse exports are running.
+
+**Pattern to watch for generally:** an arm directory with several `unsharded*` exports differing in
+configuration is a trap, because the eval tooling globs for the newest `harness_results*.json` and
+nothing ties a number back to which export produced it. The `sparseeval_*` convention introduced
+today at least makes the routing path visible in the path name.

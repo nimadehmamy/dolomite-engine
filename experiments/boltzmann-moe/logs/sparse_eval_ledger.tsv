@@ -25,3 +25,9 @@ utc	jobid	job_name	kind	sparse_eval_dir	oracle_dir
 2026-09-22T21:46:17Z	1867430	sev_abl_T_134M_hyb_tau0p35	like	results/iclr26_abl/abl_T_134M_hyb_tau0p35/sparseeval_step32000	results/iclr26_abl/abl_T_134M_hyb_tau0p35/unsharded_step32000
 2026-09-22T21:46:21Z	1867432	sev_abl_R_134M_hyb_rnorm_non	like	results/iclr26_abl/abl_R_134M_hyb_rnorm_none/sparseeval_step32000	results/iclr26_abl/abl_R_134M_hyb_rnorm_none/unsharded_step32000
 2026-09-22T21:46:25Z	1867433	sev_abl_T_134M_hyb_tau2p0	like	results/iclr26_abl/abl_T_134M_hyb_tau2p0/sparseeval_step32000	results/iclr26_abl/abl_T_134M_hyb_tau2p0/unsharded_step32000
+2026-09-22T21:56:04Z	1867516	sev_tabcost_r16m512	like	results/iclr_sink/iclr_hop_K32_top2_sink/unsharded_sparse_r16m512	results/iclr_sink/iclr_hop_K32_top2_sink/unsharded
+2026-09-22T21:56:08Z	1867517	sevg_tabcost_r16m512	gsm	results/iclr_sink/iclr_hop_K32_top2_sink/unsharded_sparse_r16m512	results/iclr_sink/iclr_hop_K32_top2_sink/unsharded
+2026-09-22T21:56:39Z	1867523	sev_iclr_sandwich	like	results/iclr_sink/iclr_big_hop_sandwich_sink/unsharded_sparse_r16m512	results/iclr_sink/iclr_big_hop_sandwich_sink/unsharded_mucal
+2026-09-22T21:56:44Z	1867524	sevg_iclr_sandwich	gsm	results/iclr_sink/iclr_big_hop_sandwich_sink/unsharded_sparse_r16m512	results/iclr_sink/iclr_big_hop_sandwich_sink/unsharded_mucal
+2026-09-22T21:56:48Z	1867525	sev_iclr_pureT12	like	results/iclr_sink/pure_hop_T12_sink/unsharded_sparse_r16m512	results/iclr_sink/pure_hop_T12_sink/unsharded_mucal2
+2026-09-22T21:56:52Z	1867526	sevg_iclr_pureT12	gsm	results/iclr_sink/pure_hop_T12_sink/unsharded_sparse_r16m512	results/iclr_sink/pure_hop_T12_sink/unsharded_mucal2
