@@ -22,3 +22,6 @@ utc	jobid	job_name	kind	sparse_eval_dir	oracle_dir
 2026-09-22T21:38:28Z	1867163	sev_sp400_hybrid	like	results/cmix/cmix_400M_hybrid_sparse/sparseeval_step61035	results/cmix/cmix_400M_hybrid_sparse/unsharded_step61035
 2026-09-22T21:38:32Z	1867166	sev_sp400_sandwich	like	results/tok32B/cmix_400M_sandwich_sparse/sparseeval_step61035	results/tok32B/cmix_400M_sandwich_sparse/unsharded_step61035
 2026-09-22T21:38:36Z	1867168	sev_sp400_ablH	like	results/iclr26_abl/abl_H_400M_6G6E_deep/sparseeval_step61035	results/iclr26_abl/abl_H_400M_6G6E_deep/unsharded_step61035
+2026-09-22T21:46:17Z	1867430	sev_abl_T_134M_hyb_tau0p35	like	results/iclr26_abl/abl_T_134M_hyb_tau0p35/sparseeval_step32000	results/iclr26_abl/abl_T_134M_hyb_tau0p35/unsharded_step32000
+2026-09-22T21:46:21Z	1867432	sev_abl_R_134M_hyb_rnorm_non	like	results/iclr26_abl/abl_R_134M_hyb_rnorm_none/sparseeval_step32000	results/iclr26_abl/abl_R_134M_hyb_rnorm_none/unsharded_step32000
+2026-09-22T21:46:25Z	1867433	sev_abl_T_134M_hyb_tau2p0	like	results/iclr26_abl/abl_T_134M_hyb_tau2p0/sparseeval_step32000	results/iclr26_abl/abl_T_134M_hyb_tau2p0/unsharded_step32000

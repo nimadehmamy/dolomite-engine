@@ -240,6 +240,22 @@ while true; do
     # cannot race pruning. This covers arms that are ALREADY RUNNING from before that change and so
     # have not picked it up yet; it can be dropped once every live arm has restarted.
     bash "$DIR/../milestone_ckpt_backup.sh" 2>&1 | grep -E "hard-linked|FAILED" >> "$LOG"
+    # 2026-09-22 (HANDOFF §21): any arm trained with sparse_forward + sparse_start_step > 0 reloads
+    # with _sparse_active FALSE and gets evaluated on the DENSE all-K ORACLE path, which is how the
+    # sparsity claim went unmeasured for the whole project. This submits the missing PROXY-SPARSE
+    # eval for any arm that already has a dense one. Capped, ledger-deduped, skips milestones.
+    MAXSUB=2 bash "$DIR/../sparse_eval_followup.sh" 2>&1 | grep -vE "nothing to do|: 0 submitted|^  skip" >> "$LOG"
+
+    # ---- EVAL ON FINISH (added 2026-09-21) ---------------------------------------------------
+    # Belt-and-braces with the dedicated `boltz_eval_finish` babysitter. Neither the watchdog nor
+    # the older `boltz_auto_eval` babysitter used to cover these arms: boltz_auto_eval drives
+    # collect_flops_wave_20260912.sh, whose CFGDIRS are the eight configs/iclr_* dirs and include
+    # NEITHER configs/cmix NOR configs/iclr_26 -- so a finished cmix/iclr_26 arm was only ever
+    # evaluated by hand from a Claude session, and a session exit on 2026-09-21 killed exactly
+    # that trigger. auto_eval_on_finish.sh is edge-triggered internally (fires only when
+    # latest_checkpointed_iteration == num_training_steps, no results file, no live job of that
+    # name), so two callers cannot double-submit.
+    bash "$DIR/../auto_eval_on_finish.sh" 2>&1 | grep -E "submitted|skip" >> "$LOG"
 
     # Self-walltime check
     elapsed=$(($(date +%s) - START_TS))
