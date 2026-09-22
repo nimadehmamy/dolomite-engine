@@ -650,7 +650,13 @@ class BoltzmannMoEW1W2Sparse(BoltzmannMoEFFEnergy):
         ``(A^T x).(B^T x) = sum_i l_i (v_i.x)^2 = x^T M_r x``. `proxy_scale` starts at 0.5, the
         mean of the gelu gate.
         """
-        if getattr(self, "_svd_done", False) or self.proxy_rank <= 0:
+        # 2026-09-22 BUG A, same defect as the base class: `_svd_done` is a PLAIN attribute, so
+        # it resets in every new process and a resume past sparse_start_step re-ran this refit,
+        # discarding whatever the proxy had learned since. Read the PERSISTED buffer instead.
+        if self.proxy_rank <= 0:
+            return
+        if getattr(self, "_svd_done", False) or bool(getattr(self, "_svd_done_buf", torch.zeros(())).item()):
+            self._svd_done = True
             return
         if self.proxy_V is None or self.proxy_V2 is None:
             return
@@ -662,6 +668,8 @@ class BoltzmannMoEW1W2Sparse(BoltzmannMoEFFEnergy):
                 "w1w2 proxy SVD refit skipped: proxy_iters=%d (per-iteration heads must be "
                 "fitted offline, e.g. by fit_subspace_proxy_20260916.py)", self.proxy_iters)
             self._svd_done = True
+            if hasattr(self, "_svd_done_buf"):
+                self._svd_done_buf.fill_(1)   # 2026-09-22: survive a requeue
             return
         try:
             with torch.no_grad():
@@ -717,10 +725,14 @@ class BoltzmannMoEW1W2Sparse(BoltzmannMoEFFEnergy):
                         self.proxy_scale.data[k] = 1.0
                         self.proxy_bias.data[k] = 0.0
             self._svd_done = True
+            if hasattr(self, "_svd_done_buf"):
+                self._svd_done_buf.fill_(1)   # 2026-09-22: survive a requeue
         except Exception as e:                        # never let a warm start kill a long run
             import logging
             logging.getLogger(__name__).warning("w1w2 proxy SVD refit skipped: %r", e)
             self._svd_done = True
+            if hasattr(self, "_svd_done_buf"):
+                self._svd_done_buf.fill_(1)   # 2026-09-22: survive a requeue
 
 
 def build_boltzmann_moe_w1w2_sparse(
