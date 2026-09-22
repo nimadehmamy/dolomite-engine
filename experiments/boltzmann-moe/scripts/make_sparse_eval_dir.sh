@@ -32,11 +32,24 @@ python3 - "$SRC/config.json" "$DST/config.json" <<'PY'
 import json,sys
 src,dst=sys.argv[1],sys.argv[2]
 c=json.load(open(src))
-n=0
+n=r=0
 for b in (c.get('mlp_blocks') or []):
-    if 'n_experts' in b and b.get('sparse_forward') and (b.get('sparse_start_step') or 0)>0:
+    if 'n_experts' not in b: continue
+    if b.get('sparse_forward') and (b.get('sparse_start_step') or 0)>0:
         b['sparse_start_step']=0; n+=1
+    # TRAINING-ONLY knob that blocks CONSTRUCTION at eval (found 2026-09-22 on the iclr_sink
+    # sparse exports): energy_ff.py:945 asserts repulsion_subsample > 0 whenever sparse_forward
+    # meets repulsion_space != "weight", because the sparse path never computes all K expert
+    # outputs. But expert repulsion is an AUXILIARY LOSS gated on self.training -- it never
+    # touches the forward output -- so it cannot arise at eval, and the comment at :952 says
+    # exactly that ("Asserting at construction would make every such checkpoint unloadable for a
+    # reason that cannot arise at eval"). This assert slipped past that intent. Zeroing the coef
+    # is therefore EXACT for inference, and strictly safer than inventing a subsample size.
+    if (b.get('sparse_forward') and float(b.get('repulsion_coef') or 0) > 0
+            and int(b.get('repulsion_subsample') or 0) <= 0
+            and b.get('repulsion_space') != 'weight'):
+        b['repulsion_coef'] = 0.0; r += 1
 json.dump(c,open(dst,'w'),indent=2)
-print(f"  patched {n} mixture block(s) to sparse_start_step: 0")
+print(f"  patched {n} block(s) to sparse_start_step: 0; neutralised training-only repulsion on {r}")
 PY
 echo "  sparse-eval dir ready: $DST"
