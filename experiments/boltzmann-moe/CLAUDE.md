@@ -1,5 +1,41 @@
 # Boltzmann MoE — Experiment Guide
 
+> ## 🗄 THE RESCUED DATASET COPY IS A BIASED PREFIX — never compare loss across copies
+>
+> **Measured 2026-09-22 (HANDOFF §23).** `/proj/dmfexp/datasets-shared/granite-4-cmix-subset/` holds
+> **complete** copies of `megamath-web-pro_0` and `finemath-3plus-rewritten_0` but only an
+> **18.6% byte PREFIX** of `web-nemotron-cc-hq-p2_0/1` (50B of 268.7B tokens each).
+>
+> **That prefix is ~0.47 nats EASIER than the rest of the corpus** — 2.8702 vs 3.3213 and 2.7031 vs
+> 3.1836 mean token NLL, scored by a full-corpus-trained checkpoint on documents inside vs beyond the
+> span, consistent across both shards. Nothing in the dataset tree documents an ordering; the
+> measurement is the only evidence (`scripts/test_subset_prefix_bias_20260922.py`).
+>
+> **So a subset-trained arm's loss CANNOT be compared with a full-corpus arm's.** This already
+> produced a false reading: the 8B knob arms end at `train-lm_loss` 2.33 while the 32B cmix arms end
+> at 2.6544 — same model, same mixture weights, both fully decayed — which looked like the 8B arms
+> rivalling the 400M Switch (2.4095). A 134M model cannot beat itself with 4x fewer tokens. The bias
+> predicts 0.70 x 0.47 x 0.85 ≈ 0.28 nats against the 0.32 observed, i.e. all of it. Comparisons
+> *within* the knob sweep are valid; all six share the subset.
+>
+> **For anything that must match the 32B table, use the FULL corpus — it needs no copying.**
+> `/proj/datasets/ndehmamy-dataset-rescue/` holds the full `.bin` AND matching full `.idx` for all
+> four datasets as **hard links** (`links=2`, same inode as the owners' path, `dev=54`). Hard links
+> keep the inode alive after the owners unlink their name, so their deletion does not destroy the
+> data. Use a FRESH `data_cache_path` — the Megatron blend index is keyed on the mix and collides
+> with the subset's cache otherwise.
+>
+> **Limits of that protection, so it is not over-trusted:** a hard link defends against `rm` only,
+> not against in-place truncation (both names share one set of blocks), and both paths sit in the
+> SAME fileset (`datasets` on `ess6000-1`), so a fileset purge takes both. A second independent copy
+> is not possible: `/proj/dmfexp` is at **100%** (3.2 T free of 350 T).
+>
+> **NEVER pair indices across directories.** `full-corpus-indices/*.idx` + subset `.bin` reads past
+> EOF; subset `.idx` + full `.bin` silently trains on the first 18.6% only. Neither necessarily
+> errors. Also: a full-corpus directory cannot be assembled under `/proj/dmfexp/` by hard-linking —
+> `/proj/datasets` and `/proj/dmfexp` are different filesystems, `ln` fails per-file, and you are
+> left with indices and no data, which is exactly the mispairing above.
+
 > ## 💾 TOKEN MILESTONES: VERIFY HOURLY THAT THE MACHINERY IS ALIVE. LOSS IS PERMANENT.
 >
 > **User instruction, 2026-09-20: "it is very important to check that the milestone script is still

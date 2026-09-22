@@ -45,8 +45,16 @@ assert moes, "no fused mixture block here"
 print(f"{src}")
 print(f"  {len(moes)} block(s)  K={moes[0].n_experts}  top_k={moes[0].top_k}  "
       f"proxy_rank={getattr(moes[0],'proxy_rank',0)}  e_sign={moes[0].e_sign}  "
-      f"sparse_active={getattr(moes[0],'_sparse_active',None)}")
+      f"sparse_active={getattr(moes[0],'_sparse_active',None)} (forced False to collect exact E)")
 
+# Force the DENSE path for collection. `Collector` hooks `_route`, and `_forward_sparse` never
+# calls `_route` -- it inlines `_logits_raw` twice (see the surrogate module's section (d)). So with
+# _sparse_active True the hook never fires and the collector returns nothing, which is how the first
+# attempt at this died. The dense fused path DOES call `_route`, and it gives us the EXACT all-K
+# energies, which is precisely the reference we need. The stored proxy parameters are unaffected by
+# this flag, so `_proxy_energies` below still reports the proxy that shipped in the file.
+for mo in moes:
+    mo._sparse_active = False
 cols = [cal.Collector(mo, a.per_call) for mo in moes]
 seqs = cal.load_docs(a.data_prefix, a.batches, a.seqlen)
 with torch.no_grad():
@@ -68,3 +76,18 @@ for bi, (mo, (x, E, it)) in enumerate(zip(moes, data)):
     elif ov <= chance * 1.6: v = "*** AT/NEAR CHANCE: UNFITTED ***"
     else:               v = "poor"
     print(f"  {bi:>5} {x.shape[0]:>8} {ov:>12.4f} {chance:>8.4f} {v:>28}")
+
+    # PER-ITERATION breakdown. A recurrent block is applied `layer_iterations` times and, with
+    # proxy_iters=1, ONE head has to serve every one of them -- the hidden-state distribution is
+    # not the same at iteration 0 and iteration 11. calibrate_proxy_router's docstring states the
+    # test directly: "If agreement falls off with iteration index, one proxy is not enough."
+    n_it = int(it.max()) + 1
+    if n_it > 1:
+        print(f"        proxy_iters={getattr(mo,'proxy_iters',1)}  applications={n_it}")
+        print(f"        {'iter':>5} {'tokens':>7} {'agree':>8}")
+        for i in range(n_it):
+            msk = it == i
+            if msk.sum() == 0: continue
+            a_i = cal.agreement(Ep.double()[msk], E.double()[msk], k, mo.e_sign)
+            bar = "#" * int(round(a_i * 40))
+            print(f"        {i:>5} {int(msk.sum()):>7} {a_i:>8.4f}  {bar}")
