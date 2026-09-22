@@ -874,3 +874,138 @@ dispatch + Sinkhorn are paid per application and are independent of `I_e`.
       compute per arm. This is the reason it cannot be done before Sep 24.
 - [ ] For the current draft, state effective-depth-12-at-both-scales as a **deliberate control**
       rather than leaving a reviewer to notice the 400M is unusually shallow.
+
+## 2026-09-21 — prefactor exactness ladder (configs ready, NOT launched)
+
+- [x] Prove by autograd (float64) whether `hopfield_grad_scale` returns `grad_h E`. RESULT: only
+      the NEW `exact` mode (`2/I_e`) paired with `gelu_grad_method: erf_exact` is exact
+      (ratio 1.000000, cos 1.00000000). `mean`+`sigmoid` is right in magnitude but cos 0.9968;
+      `inv_sqrt` is 16.7x and the SHIPPED `sqrt_consistent` is 66.9x the true gradient at I_e=4480.
+- [x] Add `exact` mode to `_hopfield_grad_prefactor` + the 3 asserts in `config/mlp.py`.
+      Additive only; every existing config keeps its behaviour.
+- [x] Establish that the knob is hopfield-ONLY and why: hopfield's energy is a sum of I_e POSITIVE
+      terms (E=O(1) forces 1/I_e, leaving grad ~ 1/sqrt(I_e)); w1w2's is a sum of SIGNED terms, so
+      one 1/sqrt(I_e) in the energy normalises both at once and `W1W2FFEnergy` is exact with no knob.
+- [x] Build `abl_J` (mean), `abl_K` (inv_sqrt), `abl_L` (exact+erf_exact) off
+      `cmix_134M_pure_32B_sparse`, which IS the `sqrt_consistent` arm and is already done at 32B.
+      See `configs/iclr_26/ablations/PREFACTOR_LADDER.md`.
+- [ ] LAUNCH DECISION PENDING (user). 8 GPUs preemptable, 0.521 s/step => 4B in 2.2 h, 8B in 4.4 h.
+- [ ] 1-GPU eval of the reference's `milestones/unsharded_tok8B_step32000` to get the 8B Avg11
+      comparison point (no retraining needed).
+- [x] Avg11_norm question: OUR RECIPE ALREADY IS "acc_norm where available". lm-eval emits NO
+      acc_norm for boolq/copa/winogrande/race/lambada_openai, so Avg11_norm is IDENTICAL to Avg11
+      and a separate column would duplicate an existing one. Colleagues' recipe
+      (EGPT-RL/RESULTS.md:247) is character-for-character the same split.
+
+## 2026-09-22 — open items
+
+- [x] 400M tier: hybrid, 6G6E, 6G6S all complete and evaluated; table 6 pushed (`4b9ef77`).
+- [ ] `sandwich` 400M -> ETA 11:48Z. `abl_H_6G6G` dense -> ETA 12:13Z. Both auto-evaluated by
+      `boltz_eval_finish` on completion; both watchdog-registered.
+- [ ] tau sweep: 0.35 ETA 06:31Z, then submit `abl_T_134M_hyb_tau2p0` (config ready, watchdog
+      entry already added) when the GPUs free. Stop each at step 32,000 and eval its 8B anchor.
+- [ ] DECIDE after the tau sweep: implement `log_tau` learnable temperature, or drop it. See
+      HANDOFF 18.4 for the three design decisions and the free-energy hazard.
+- [ ] STILL UNBUILT and worth it if time allows: `3x4E` / `4x3E` at 134M (the missing middle
+      between `1x12E` and `12x1E`, isolates weight sharing from recurrence) and a 12-layer DENSE
+      baseline at 134M (there is none -- the dense arms are 6 layers).
+- [ ] Ask admins to raise the `dmfexp` FILESET quota (350T/350T while the filesystem has 2.2P
+      free). This is the real fix for the space pressure; deletion and ballast are not. HANDOFF 17.14.
+
+## 2026-09-22 (paper consistency)
+
+- [x] `tab:pure` / `tab:threeway` captions state 7.86B + 100%-web and disclaim comparison to `tab:main`
+- [x] `sec/experiments.tex` Setup rewritten into two named waves (headline 32.0B cmix / sparsity 7.86B web)
+- [x] `tab:main` caption: per-tier tokens/step (262,144 at 134M; 524,288 at 400M+1B), 1B has no baseline
+- [x] `\ref{sec:surrogate}` -> `\S\ref{app:proxy}`; all 74 refs in the paper resolve
+- [x] `scripts/splice_generated_table.py` with a caption/label guard; validated on both generated tables
+- [ ] **Regenerate `tab:main` + `tab:status` and push** once sandwich (12:15Z) and 6G6G (13:21Z) evaluate
+- [ ] Add `abl_R` (full-32B `routing_norm: none`) and `abl_C` (true 1G1x6E1G sandwich) to `tab:status` when done
+- [ ] **Decide**: promote `tab:frontier-outtake` out of `sec/outtakes.tex` into `sec/appendix.tex`.
+      Three live refs need it (`experiments.tex:222` aux-loss 43.83->43.12; `appendix.tex:1602` MMLU
+      range; `appendix.tex:1990` routing sign) and outtakes.tex itself calls it a valid K/k sweep,
+      so it is not "too old" in the sense the instruction meant. Keep the label so refs resolve.
+- [ ] Ask admins to raise the `dmfexp` **fileset** quota (350T/350T against 2.2P free)
+- [x] tab:main independently verified cell-by-cell (scripts/audit_table1.py, 13 rows, 0 mismatches)
+- [ ] Watch whether the 400M checkpoint-save slowdown (15-21 min per save from ~12:15Z, external
+      GPFS contention) worsens. Lever if it does: `save_interval` 200 -> 1000, but it needs a
+      restart. At >13h margin, leave alone. See HANDOFF §18.11.
+- [ ] When abl_C lands (~18:20Z), report it as ISO-TOTAL only -- it cannot be iso-active (HANDOFF §18.14)
+- [ ] **Decide** whether the new `lm_loss` column stays in `tab:main` (my addition, not requested).
+      Without it the 134M Avg11 ranking reads as a modelling result when the arms are within
+      0.0338 nats. See HANDOFF §18.10.
+- [ ] **ABSTRACT: two claims the tables contradict** (see paper/CRITIC_LOG.md 2026-09-22 (c)).
+      (a) "almost on par with standard switch-MoE" -- true at 134M (0.0215 nats) but not at 400M
+          (-0.95pp / -1.91pp, loss deficit triples). Contradicts our own experiments section.
+      (b) "scaling of recurrent blocks ... up to 1B scale hybrid models" -- the only 1B arm is
+          NOT recurrent (layer_iterations all 1) and is stacked 8G4E, not the hybrid.
+      Proposed replacement text is in CRITIC_LOG. Not edited -- abstract is the thesis framing.
+- [ ] **BEFORE SUBMISSION: suppress the 26 rendered `\CC{}` review notes.** `main.tex:56` defines
+      `\newcommand{\CC}[1]{{\color{Purple}[CC: #1]}}`, so every one of them prints in purple in the
+      PDF. Counts: appendix 15, intro 5, experiments 3, theory 2, main 1. One-line fix at submission
+      time: `\newcommand{\CC}[1]{}`. Do NOT delete the notes themselves -- they carry the reasoning
+      behind several retractions.
+- [ ] Adopt: **stop ablations at 8B** and decide on `scripts/rank_arms_at_milestone.py` (validated
+      Spearman 1.000 at 134M, 0.943 at 400M). Only paper rows need the full 32B.
+- [ ] Raise `save_interval` 200 -> 1000 for 400M+ configs. Measured today: saves were ~88% of
+      `6G6G`'s wall time under GPFS contention (15-21 min per save vs 2 min of compute).
+- [ ] Milestone capture is unreliable for tok8B (`abl_C`, `abl_D` both missing it) because
+      `max_to_keep: 2` prunes the 8B checkpoint before the backup script runs. Either raise
+      `max_to_keep` early in a run or accept log-only 8B reads (the latter is now the recommended path).
+
+## Dataset rescue (2026-09-22)
+- [x] Hard-link all 14 files of the four datasets (zero space, defeats an owner `rm`)
+- [x] Tokenizer (14 MB, 492 config refs) to 3 independent locations, md5-verified
+- [x] Shared 275 GiB subset at `/proj/dmfexp/datasets-shared/granite-4-cmix-subset/` (group-readable)
+- [x] `cmix_134M_hybrid_32B_sparse_SHARED.yml` + README for colleagues
+- [x] Smoke-tested the SHARED config: 40 steps, 2 GPUs, loss 7.94->7.58, blend index cached
+- [ ] **Decide** on the 2 TB full web `.bin` (only needed for bit-exact reruns of published arms)
+- [ ] Tell colleagues the shared path exists (bharat et al. are in `proj_dmfexp`)
+- [x] Extended web subsets to 50B tokens each (+230 GiB); verified and smoke-tested
+- [ ] If a 128B run is PUBLISHED, update the Setup claim "no arm revisits a document"
+- [ ] **Noted, user accepted 1.49 epochs**: the datamix single-epoch ceiling is 86B tokens, set by megamath having
+      only 13.0B in existence. A 128B run = 1.49 epochs of megamath even with the original data.
+      Reweight, accept-and-state, or tokenise more math. See HANDOFF §19.4.
+- [x] Moved `reasoning-megatron` (3.8 GB, 30 files) into the shared tree, verified
+- [x] abl_S launched (job 1862812): hopfield + surrogate router, breaks the expert-form/router confound
+      134M/32B. Breaks the expert-form / selector confound (§15.1) that currently makes the
+      w1w2 sparse-surrogate arm's -0.0108 nats unattributable. Needs a new config -> confirm first.
+- [ ] abl_S: read the 8B loss at step ~30,517 (~20:20Z) against hopfield+proxy 2.6544 and
+      w1w2+surrogate 2.6436 -- that assigns the -0.0108 nats to expert form or to the router
+- [ ] abl_S: RE-MEASURE s/step past a few thousand steps. Provisional 0.4931 vs w1w2's 0.3304 at
+      equal FLOPwt would mean hopfield is ~49% slower in wall clock, but autotuning was still active.
+- [ ] **1B decision** (HANDOFF §19.9): run the all-MoE pair (`bharat_1B_18L_allMoE_{boltz,switch_baseline}`)
+      with `fused_experts: false` at 32 GPUs -- 513M/495M active vs the current arm's 279M. Skip
+      4/64 and 6/64: top_k gives +17% active for +17% compute because 8 of 12 layers are dense.
+      NOTE 24 GPUs cannot hit 524,288 tok/step (128 seqs / 24 is not an integer).
+
+## Code bugs from the 2026-09-22 audit (HANDOFF §20.1, CRITIC_LOG 2026-09-22 (d))
+- [x] BUG A fixed: `_copy_full_into` for DTensor-safe writes + persistent `_svd_done_buf`
+- [x] BUG A validated twice: 400-step test AND five live 4-GPU arms past step 5,000, all zero
+- [x] BUG B handled per-arm (`router_aux_loss_coef: 1.0` in the six knob configs), NOT by changing
+      the global default -- that keeps every published arm reproducible from its own config.
+      Verified arithmetically: train-loss minus lm_loss now equals aux_loss exactly.
+- [ ] BUG A follow-up: verify the refit OUTPUT numerically (fitted proxy_V/B vs a direct SVD of W)
+- [ ] BUG A follow-up: exercise the persistent `_svd_done_buf` path on a real requeue
+- [ ] Decide whether to state the 10x Switch-vs-energy aux asymmetry in the paper
+- [ ] **RE-RUN THE KNOB SWEEP** once B is settled. §19.5's "every knob is inert" may be an artifact
+      of the 0.001 multiplier rather than a property of the knobs.
+- [ ] Relaunch abl_S and abl_P on fixed code (both killed 2026-09-22, deregistered from watchdog)
+- [ ] Pin the published arms' configs to their ACTUAL behaviour (`proxy_init: random`,
+      `router_aux_loss_coef: 0.001`) so a requeue reproduces what they really ran
+
+## Sparse eval (2026-09-22, HANDOFF §21)
+
+- [x] Diagnose why sparse arms were evaluated densely (`_sparse_active` never flipped outside training)
+- [x] Fix, inference-only, without touching `sparse_start_step` in any training config
+- [x] Verify twice: end-task deltas (job 1866475) and the gate read off a loaded model (job 1867248)
+- [x] Fix the second copy of Bug A in `energy_ff_w1w2_sparse.py`
+- [x] Watchdog backstop so a new sparse arm cannot be evaluated densely again
+- [ ] **Finish wave A** — 13 arms, 5 done; then wave B (short 8B ablation finals)
+- [ ] **Re-evaluate the 3 `iclr_sink` sparse exports** (jobs 1867554/64/66) — `tab:cost`'s
+      "proxy router" row currently reports a `proxy_rank: 0` export's accuracy
+- [ ] **Paper**: add the sparse column, state the routing path in `app:eval`, and stop pairing
+      proxy-model costs with dense-model accuracy in `tab:cost`
+- [ ] Wave C (milestones) — DEFERRED until every final is redone
+- [ ] Re-run the knob sweep conclusions against the **control**, not the old baseline (§19.5 must
+      not be quoted until then)

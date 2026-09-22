@@ -1942,3 +1942,325 @@ Caveat to note when reading its wandb: `_log_norms` is gated behind
 `not torch.compiler.is_compiling()` and this arm sets `torch_compile: true`, so `output_norm` —
 the direct check that the FF branch is live — will NOT appear. Judge branch health from the loss
 curve against the hybrid instead.
+
+## 2026-09-21 (evening) — the Hopfield gradient prefactor is not a gradient
+
+**`hopfield_grad_scale` does NOT return `grad_h E`.** For `E = mean_j gelu(Wh)_j^2` the correct
+prefactor is `2/I_e`; the shipped `sqrt_consistent` returns `sqrt(I_e)` = **66.93x** that at
+I_e=4480. Proven by autograd on `energy_per_token` in float64. The two gelu knobs are COUPLED:
+`"sigmoid"` returns `phi' = 0.5*sigmoid(1.702u)` (HALF the derivative), so `mean` = 4/I_e is
+magnitude-correct only there and is 2x too large with `erf_exact`. A new mode `exact` = 2/I_e
+paired with `erf_exact` is the only bit-exact setting (ratio 1.000000, cos 1.00000000).
+
+**Why hopfield needs the knob and w1w2 does not** — hopfield's energy is a sum of I_e POSITIVE
+terms (so 1/I_e is forced for `E = O(1)`, leaving `grad E ~ 1/sqrt(I_e)` because the gradient is
+an INCOHERENT vector sum); w1w2's is a sum of SIGNED terms, so one `1/sqrt(I_e)` in the energy
+normalises E and its gradient at once and its forward is exactly `-grad_h E`. You cannot have
+`E = O(1)` and `grad E = O(1)` simultaneously for a positive-definite energy of this form.
+
+**The inflation predates the explanation for the symptom it cured** (added 2026-09-12 for a dead
+FF branch; the sign inversion that caused the dead branch was found 2026-09-15). But the shipped
+66.93x arm ran a full 32B with ZERO grad_norm excursions above 5.0, so "it destabilises training"
+is NOT supported. Ablation `abl_J/K/L` running to settle it. See HANDOFF §17 and
+`configs/iclr_26/ablations/PREFACTOR_LADDER.md`; writeup in Overleaf `sec/debug.tex`.
+
+**Two finished runs had never been evaluated.** `t90k_switch_lastisoP` **Avg11 44.93 / MMLU 25.40**
+and `t90k_hybrid_K32top2` **44.42 / 24.53**, both 90,000 steps = 23.59B tokens on 4 GPUs, OLD
+100%-web datamix. Energy trails Switch by 0.51pp — same direction as §14.1's -0.61pp at
+134M/iso-FLOP, but inside the 0.32pp seed noise floor, and comparable only to each other.
+
+**All seven live arms were missing from the watchdog** and are now registered; adoption verified
+(one job per name, no duplicates). Two new self-resubmitting watchers: `boltz_eval_finish` (nothing
+unattended had EVER covered cmix/iclr_26 arms) and `boltz_ladder_handoff` (1 -> 8 GPU promotion).
+
+## 2026-09-22 — the 400M tier is complete and the learned gate wins
+
+**Two clean iso-FLOP pairs at 400M, both favouring Switch.** Recurrent `6G1x6E` **47.29** vs
+`6G1x6S` **48.24** (FLOPwt 299.4 vs 301.0M) = **-0.95pp**. Non-recurrent `6G6E` **46.92** vs
+`6G6S` **48.83** (238.0 vs 239.5M) = **-1.91pp**. The gap WIDENS with scale (-0.61pp at 134M
+iso-FLOP, -0.51pp on the t90k pair at 23.59B) and -1.91pp is far outside the 0.32pp seed floor.
+
+**Recurrence helps energy (+0.37pp) and hurts Switch (-0.59pp)** — the one asymmetry that favours
+the energy formulation, and mechanistically sensible since iterating one block is repeated energy
+descent. But it costs +26% FLOPs for that +0.37pp, and `6G6S` is the best arm at the LOWEST FLOPwt.
+
+**Dense has beaten every MoE variant at 134M.** Dense iso-active 45.01 @ 123.3M FLOPwt vs energy
+MoE 44.82 @ 141.7M — better while spending 13% fewer FLOPs. The best 134M arm has no mixture at
+all (`abl_E`, 45.87). So the recurrent energy LAYER contributes; the MIXTURE costs 1.05pp.
+`abl_H_400M_6G6G_deep_isoactive` (12 dense layers, iso-FLOP with both MoE arms at 40% fewer
+params) had STALLED at 26.5% with no watchdog entry; resumed and registered, ETA 12:13Z.
+
+**Post-hoc Sinkhorn-mu calibration made all three 134M arms WORSE** (pure -1.02pp, hybrid -0.32,
+sandwich -0.08) — keep the mu=0 numbers, and rule 9's "+1.827 nats" rests on a confounded
+between-arm comparison. `pure`'s deficit is therefore a real capacity limit, not an eval artifact.
+
+**Fixed-temperature sweep running** (tau 0.35 / 1.0 / 2.0 at 134M to 8B); control tau=1.0 is
+43.59 Avg11 at 8B. Learnable temperature is NOT implemented anywhere in the tree. Prediction on
+record: with `routing_norm: zscore` the points should be flat. See HANDOFF 18.1-18.5.
+
+**Routing knobs are dead ends, and Avg11 at 8B is unreliable.** tau across a 5.7x range moves the
+loss by 0.0096 nats; `routing_norm: zscore` beats `none` by 0.0185 nats and 1.41 ppl (keep zscore;
+do NOT implement learnable temperature). Both produced ~1.2-1.4pp Avg11 spreads, which calibration
+shows are noise: the control's own 8B->32B trajectory gives ~4.5pp of Avg11 per nat of loss, so
+those loss deltas predict +0.04 and +0.08pp, i.e. the observed gaps are 32x and 14x too large.
+RULE: at 8B/134M, trust an Avg11 gap only within ~2x of 4.5*dloss. Also: `none` does NOT collapse
+routing (effK 15.7/16) -- CLAUDE.md's "effK 7.999/8" was measured without Sinkhorn balancing and
+does not transfer to our arms. See HANDOFF 18.6-18.8.
+
+
+## 2026-09-22 — paper consistency audit; two waves separated; a safe table splicer
+
+**Cross-table budget confound, found and fixed.** Landing the generated `tab:main` (32.0B tokens,
+cmix 70/30 web/math) put it beside three main-text tables built on the **7.86B, 100%-web** `iclr_*`
+grid. `tab:pure` shows the energy arm at Avg11 44.58 and `tab:main`'s pure arm at 42.00, and neither
+caption gave the budget or the corpus. Verified from `configs/iclr_sink/iclr_hop_K32_top2_sink.yml`:
+30,000 steps, mbs 4, ga 4, and a `datasets:` block with only the two web shards — no math.
+`tab:pure` and `tab:threeway` captions now state 7.86B / 100%-web in bold and disclaim the
+comparison. `tab:cost` needed nothing (MACs/token). `tab:cmix134m` needed nothing — it agrees with
+`tab:main` to the digit on all four shared rows.
+
+**The root cause was the section preamble.** `sec/experiments.tex` opened with "All results below
+come from a single controlled wave" and then described 30,000 steps / 262,144 tok-per-step / 7.86B on
+web-only Nemotron-CC — i.e. the sparsity wave, not the headline wave. Setup now names **two waves**,
+says which tables belong to which, and states their accuracies are not commensurable. Headline
+datamix verified byte-identical (0 diff lines) across the 134M / 400M / 1B configs:
+0.35/0.35 web + 0.15 megamath-web-pro + 0.15 finemath-3plus-rewritten, `split: 99,0.5,0.5`.
+
+**Two errors in my own `tab:main` caption.** It asserted a single "262,144 tokens per step" for all
+three groups; only 134M runs that (x122,070) while 400M and 1B run 524,288 (x61,035) — both 32.0B.
+And the 1B group has exactly **one row and no baseline**: `cmix1B_12L_gptDense_32B` is the only 1B arm
+that ever reached 32B (every other 1B config is a smoke test of <=500 steps or never ran), and a 1B
+baseline cannot finish before the deadline at 1.78 s/step x 61,035. The caption now gives tok/step
+per tier and says the 1B row is a scale check, not a comparison. Its label was checked and is
+correct: `layer_iterations` all 1, 8x softmax+MLP then 4x energy+BoltzmannMoE K=64 = genuinely 8G4E
+(the filename `gptDense` is historical).
+
+**`tab:main`'s eval provenance audited.** All 11 populated rows read the **step-pinned**
+`unsharded_step{num_training_steps}` directory; none fell back to a bare `unsharded/`. So the
+`unsharded_step4000`-style trap its own header warns about is not live.
+
+**Broken ref repaired** (pre-existing, not from this work): `\ref{sec:surrogate}` was undefined and
+rendered as `??`. The distilled KL head it describes is `\S\ref{app:proxy}`. **All 74 refs in the
+paper now resolve**, and every 7+ column tabular is inside a `\resizebox`.
+
+**`scripts/splice_generated_table.py`** (NEW) replaces a generated table body in place instead of
+hand-splicing it. Its first version had a worse bug than the one it was written to prevent: it
+assumed the block ran from the `% GENERATED` marker to the line before `\end{table}`, but in
+`sec/experiments.tex` the `\caption` and `\label` sit AFTER the tabular, so the splice **deleted
+them** — and braces still balanced and environment counts still matched, so every check passed. It
+now ends the region at the bare `}` closing the `\resizebox` and **refuses to write if the region
+contains `\caption` or `\label`**. Validated on both generated tables: `tab:main` changed only its
+`% omitted` comments, `tab:status` was a 0-line no-op, both files intact.
+
+**Tooling trap worth remembering.** `compute_avg11.py <run_dir>` globs RECURSIVELY and picked
+`ablate/C_proxysel/harness_results_*.json` for `iclr_hop_K32_top2_sink`, returning 44.55, which I
+briefly read as a drift from the published 44.58. Pointing it at `<run_dir>/unsharded` gives 44.58
+and confirms the paper. Pass the EVAL dir for any arm with an `ablate/` subtree.
+
+**`abl_R_134M_hyb_rnorm_none` was never actually stopped** — an earlier `bkill` did not take and it
+has no watchdog entry. It is running the FULL 32B budget at the correct 262,144 tok/step, so it was
+left to finish (ETA 12:51Z, RUNLIMIT 19:00Z) and yields a full-budget `routing_norm: none` ablation
+instead of the 8B read we had.
+
+**Live ETAs** (from each arm's own log, not assumed): sandwich 12:15Z, abl_R 12:51Z, 6G6G dense
+13:21Z, abl_C 18:56Z. All inside the Sep 24 00:00Z deadline.
+
+### The loss column, and what it does to the 134M ranking (2026-09-22)
+
+Added `lm_loss` to `tab:main` and tested every gap against the project's own credibility rule
+(credible only within ~2x of `4.52 * dloss`, §18.8).
+
+**134M is a tie in language modelling.** The five non-pure arms lie inside **0.0338 nats**, which
+predicts 0.15pp of Avg11 against **2.10pp** observed — **13.7x**. Every pairing against the hybrid
+fails the rule: dense iso-total 6.7x, FLOP-matched Switch 6.3x, sandwich 57x, and dense iso-active is
+a **sign inversion** (worse loss 2.6640 vs 2.6544, better Avg11 45.01 vs 44.82). The ordering exceeds
+the 0.32pp matched-seed spread so it is presumably reproducible, but it is not a modelling difference
+and the caption no longer reports it as one.
+
+**`pure` is the one real 134M deficit** — worse than every other arm by at least **0.32 nats** (0.36
+against the best), loss 2.9916 vs 2.6302–2.6640, WikiPPL 66.08 vs ~40. So pure's gap is genuine and
+not an eval artifact, which answers the earlier open question about it.
+
+**400M is where the claim lives.** Switch beats the recurrent energy hybrid by **0.0653 nats** and
+the deep energy arm by **0.0704 nats**, at FLOPwt matched to 0.7% and total params to 0.07%. **The
+energy deficit in loss TRIPLES with scale — 0.0215 nats at 134M to 0.0653 at 400M.** That is the
+defensible form of "the gap widens with scale"; quote it in nats, not in Avg11.
+
+**RETRACTED: "recurrence helps the energy formulation and hurts the learned gate."** In loss,
+recurrence moves the energy arm by **+0.0002 nats** and the gate by +0.0053 — neither improves. The
++0.37pp Avg11 buys no measurable modelling gain at 26% more compute, so "repeated descent on an
+energy" is out of the caption.
+
+Caveat if challenged: the 4.52pp/nat slope is measured along ONE run's trajectory, so applying it
+across architectures assumes a shared loss-to-Avg11 curve. The sign inversion and the 13.7x factor do
+not depend on the slope's value.
+
+Also added `scripts/check_caption_numbers.py`, which diffs numbers asserted in a caption against the
+generated body. It found the FLOPwt rounding mismatch (caption argued from 239.5 while the body
+printed 240), both overstated iso-match tolerances, and the false "top four fall inside the seed
+spread" claim (their range is 0.73pp, not <=0.32pp).
+
+### 400M sandwich landed: Avg11 44.52, but iso-total only (2026-09-22)
+
+`cmix_400M_sandwich_sparse` completed 32B and scores **Avg11 44.52 / MMLU 26.18 / GSM8K 2.12 / ppl
+41.13**, `lm_loss` 2.6955 -- **-2.77pp and +0.221 nats** behind the 400M hybrid. It is `1G1x4E1G`:
+iso-total (400.33M) but **156.54M active vs 219.43M** and **FLOPwt 217.20M vs 299.38M**, i.e. 29%
+fewer active parameters and 27% less compute. The deficit is mostly a smaller-model effect, not
+placement.
+
+By contrast the **134M** sandwich `5G1x6E1G` IS matched on total, active and FLOPwt, so its -1.37pp
+is a genuine placement result. Same label, different structures -- the Blocks column distinguishes
+them and the caption now says so.
+
+`abl_R` (routing_norm=none) also completed the full 32B (`tok32B_step122070_actual32.00B`); its eval
+is running. Remaining: `6G6G` dense 400M (~13:46Z), `abl_C` (~18:20Z).
+
+### routing_norm=none at full 32B: keep zscore, and Avg11 flipped sign between budgets (2026-09-22)
+
+`abl_R` completed 32B. Clean one-variable ablation (only `routing_norm` differs).
+
+| `routing_norm` | Avg11 | MMLU | WikiPPL | lm_loss |
+|---|---|---|---|---|
+| `zscore` | 44.82 | **25.57** | **41.06** | **2.6544** |
+| `none` | **44.92** | 24.74 | 42.36 | 2.6747 |
+
+`none` wins only on Avg11 (+0.10pp, inside the 0.32pp seed spread) and loses 0.0203 nats, 1.30 ppl
+and 0.83 MMLU. **Keep `zscore`** -- on loss and perplexity, not Avg11.
+
+**The Avg11 verdict inverted between budgets while loss replicated**: at 8B `none` was -1.21pp on
+Avg11 (+0.0185 nats); at 32B it is +0.10pp (+0.0203 nats). Strongest case yet for reading loss first.
+Both arms keep balanced load (`load_effective_n_experts` 15.67 vs 15.86 of 16) -- Sinkhorn balances,
+not the logit normalisation.
+
+### 400M dense lands; loss-vs-Avg11 slope recomputed properly (2026-09-22)
+
+`abl_H_400M_6G6G_deep_isoactive`: Avg11 **47.41**, MMLU 27.38, GSM8K 2.58, ppl 29.90, lm_loss 2.4541.
+Completes an iso-FLOP trio (spread 0.62%; energy and dense iso-active to the byte):
+Switch `6G6S` 2.4042/48.83 < dense `12G` 2.4541/47.41 < energy `6G6E` 2.4746/46.92. **The dense stack
+stores 40% fewer parameters (238M vs 400M) at equal compute and equal active count and still beats
+the energy mixture** -- the sharpest form of the negative result.
+
+**Corrected my own earlier analysis.** The "13.7x" claim used the within-run slope (4.52pp/nat).
+Fitting Avg11 on lm_loss across a tier's arms gives **-13.5pp/nat at 400M (R2 0.95)** and
+**-8.6pp/nat at 134M (R2 0.76)**. Avg11 does track loss, 2-3x more steeply across arms than along one
+run. Consequences: 400M ordering is trustworthy (all arms within 0.53pp of the line); 134M is
+*unresolved* rather than refuted (five arms inside 0.0338 nats, refit R2 0.45); `pure` sits on the
+line and is genuinely behind; and **the sandwich is the single arm that misses the line, by -1.32pp
+for only 0.0053 nats** -- block placement hurts task transfer beyond language modelling.
+
+Rule: never convert nats to Avg11 with the within-run slope. Fit on the arms compared, report R2, and
+judge by residual.
+
+### VALIDATED: decide ablations at 8B on loss, not Avg11 (2026-09-22)
+
+Ranked every 32B arm by median `train-lm_loss` around its 8B crossing vs its final 32B ranking:
+**134M 7/7 exact, Spearman 1.000; 400M 4/6, Spearman 0.943** (the only inversion is two Switch arms
+0.0053 nats apart). So an 8B loss read is authoritative except between arms closer than ~0.005 nats
+-- and 8B is a quarter of the budget, so ~4x more ablations per GPU-day.
+
+Avg11 at 8B is NOT usable: the `routing_norm` delta was -1.21pp at 8B and +0.10pp at 32B (sign flip)
+while the loss delta held to within 10%.
+
+Needs no checkpoint -- reads the training log, which matters because `abl_C` and `abl_D` both lack
+their tok8B anchors (`max_to_keep: 2` prunes the 8B checkpoint before the backup script can link it).
+Precision: ~100 samples, sd 0.022 → SE 0.0022 nats.
+
+Tool: `scripts/rank_arms_at_milestone.py --tokens 8 --tok-per-step 262144 ARM ...`
+
+### Shared 275 GiB cmix subset, and the dataset rescue (2026-09-22, urgent)
+
+Owners were deleting `/proj/datasets/granite-4-datasets-megatron-merged` (2.1 TB of .bin+.idx,
+570.7B tokens at int32). Three layers now:
+1. **Hard links** in `/proj/datasets/ndehmamy-dataset-rescue/` -- all 14 files, zero space (same
+   fileset), verified links=2/same inode/same size. Defeats an owner `rm`, not a fileset removal.
+2. **Shared 275 GiB subset** at `/proj/dmfexp/datasets-shared/granite-4-cmix-subset/`: 20B-token
+   prefix subsets of both web shards (1.79x what a 32B run draws) + both math sets whole + the
+   tokenizer. Group-readable to `proj_dmfexp`. Exact byte-prefix construction, verified.
+3. **Tokenizer** (14 MB, referenced 492x) in three independent places, md5-verified. This was the
+   real near-miss -- the cheapest possible catastrophic loss.
+
+Key number: a 32B run consumes only **119 GiB** of a 2.1 TB corpus, so preserving everything was 18x
+oversized. Still open: the 2 TB of full web `.bin`, needed only for bit-exact reproduction of
+published arms (`scripts/rescue_datasets_tier2.sh`, staged, 800 GB floor guard).
+
+`grp_ebm` is an LSF group, not POSIX -- sharing uses `proj_dmfexp`/`proj_datasets`.
+
+### Web subsets extended to 50B; 128B runs now possible (2026-09-22)
+
+Both web shards rebuilt as 50B-token prefix subsets (58.2M seqs, 186.3 GiB each, 18.6% of source),
+verified byte-identical and swapped in. Shared tree 292 -> 522 GB. Smoke test on the new data passed
+(40 steps, lm_loss 7.8557 -> 7.6329, 0 errors), blend cache rebuilt.
+
+Single-epoch ceiling is **86B tokens**, set by megamath having only 13.0B in existence (all copied) at
+weight 0.15 -- not a property of the rescue. 128B = 1.49 epochs of megamath, accepted by the user.
+If a 128B run is published, update the Setup claim "no arm revisits a document" (true for all 32B arms).
+
+### abl_S launched: hopfield experts + surrogate router (2026-09-22)
+
+Job 1862812, 4 GPUs on normal/grp_ebm, 262,144 tok/step x 122,070 = 32.0B. Fills the empty cell of
+the expert-form x router 2x2 so the w1w2 arm's -0.0108 nats becomes attributable. 5-line diff from
+`cmix_134M_hyb_w1w2_sparse_surr_32B`; params identical to it to the byte (134.13M/123.12M/140.96M).
+All pre-flight checks pass, plus live confirmation of `'cuda'` DeviceMesh, 262,144 tok/step and a
+fresh start at step 50.
+
+**Queue lesson**: it sat in `preemptable` behind 735 pending jobs; `grp_ebm` is FREE again (4/32) now
+the 400M arms are done, and `bmod -q normal -G grp_ebm` started it within a minute. Check `blimits`
+rather than assuming grp_ebm is full.
+
+8B read (decisive, per the validated rule) ~20:20Z; full 32B ~06:26Z Wed.
+
+Provisional and not to be quoted yet: hopfield may be ~49% slower in wall clock than w1w2 at equal
+FLOPwt (0.4931 vs 0.3304 s/step, 4 GPUs, same router) -- but autotuning was still active. Re-measure.
+
+## 2026-09-22 — the sparsity claim had never been measured, and now it has
+
+**Every published eval in this project ran the DENSE all-K path with exact ORACLE routing.**
+`_sparse_active` is set in `__init__` from `sparse_start_step` and flipped only by
+`set_training_step()`, which only the training loop calls. Every checkpoint trains with
+`sparse_start_step > 0` (the dense warmup is what distils the proxy), so every checkpoint reloaded
+for eval with the proxy bypassed. Full writeup: HANDOFF §21.
+
+Two mechanisms, same consequence: **25 checkpoints** via that gate bug, plus **3** `iclr_sink` arms
+that have an unevaluated sparse export while the published number came from a dense one — including
+`tab:cost`'s row labelled *"K=32, proxy router"*, whose 44.58 is the accuracy of an export with
+`proxy_rank: 0`. Together that is every sparse number in the paper.
+
+**Fix is inference-only and validated twice.** `scripts/make_sparse_eval_dir.sh` builds a parallel
+eval dir, weights hard-linked, with `sparse_start_step: 0` patched in. Probe job 1866475 moved all
+four cheap tasks, which a deterministic likelihood eval cannot do unless the forward path changed;
+`scripts/verify_sparse_eval_gate.py` (job 1867248) then read the gate off loaded models — original
+`_sparse_active=False`, sparseeval `True`, in-memory route `False→True`. `sparse_start_step: 300`
+remains correct and untouched in every training config.
+
+### Result so far (5 of 13 arms complete)
+
+Avg11 is an 11-task unweighted accuracy mean in PERCENTAGE POINTS, higher better. ORACLE = dense
+all-K exact routing (what was published); SPARSE = the proxy/surrogate router actually selecting
+candidates. Each arm at its own final checkpoint, cmix datamix, 32B tokens.
+
+| arm | K | p/K | Avg11 oracle | Avg11 sparse | delta |
+|---|---|---|---|---|---|
+| 134M hybrid | 16 | 2/16 | 44.82 | 44.67 | −0.15 |
+| 134M w1w2 surrogate | 16 | 4/16 | 45.01 | 44.93 | −0.08 |
+| 134M w1w2 unc proj | 16 | 4/16 | 44.32 | 44.37 | **+0.06** |
+| 134M rnorm=none | 16 | 2/16 | 44.92 | 45.43 | **+0.51** |
+| 1B gptDense | 64 | 2/64 | 47.79 | 47.42 | −0.37 |
+
+**mean −0.01pp, range −0.37 to +0.51.** Two arms improve. Sparse routing is, so far, free — the
+headline the paper wanted and could not previously support.
+
+That is stronger than it looks: **Bug B** multiplies every one of these routers' distillation loss
+by `router_aux_loss_coef = 0.001` (effective 1e-5), so these proxies were barely trained. The
+measured penalty is an upper bound.
+
+### Also fixed today
+- **Bug A had a second copy** at `energy_ff_w1w2_sparse.py:653` (plain `_svd_done`, resets per
+  process); patched to read the persistent buffer, as the base class already was.
+- A **training-only assert** (`repulsion_subsample > 0`) made the `iclr_sink` sparse exports
+  unloadable for eval. Repulsion is an aux loss gated on `self.training`, so the eval-dir patcher
+  now zeroes `repulsion_coef` — exact for inference.
+- **Watchdog backstop**: `scripts/sparse_eval_followup.sh` runs every cycle and submits the missing
+  sparse eval for any arm that has a dense one, so this cannot silently recur (`abl_P` is sparse and
+  would have been the next victim). Milestones deferred until every final is redone.
+- Eval bursts must run **HF-offline**: 18 simultaneous jobs pulling MMLU's 57 configs got our IP
+  HTTP-429'd and killed 5 evals in 3 minutes.
