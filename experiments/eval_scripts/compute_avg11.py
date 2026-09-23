@@ -88,7 +88,26 @@ def resolve_results_path(p: Path) -> Path:
         # canonical COMPLETE Avg11 file and MUST win over any sibling base eval,
         # regardless of lexicographic order (a base named e.g. harness_results_
         # nogen_* or harness_results_36k.json otherwise sorts after 2026-09-*).
-        cands.sort(key=lambda f: (1 if "avg11reeval" in Path(f).name else 0, Path(f).name))
+        # 2026-09-23 FIX: the glob is RECURSIVE, so a `gsm8k/harness_results_*.json`
+        # written by the separate GSM8K pass is a candidate too. GSM8K is deliberately run
+        # AFTER the main harness (so a preemption does not cost the other benchmarks), so its
+        # file is usually NEWER and, being named harness_results_2026-*, also sorts LAST.
+        # It contains only gsm8k, so it won every tie and the tool reported
+        # "INCOMPLETE (0/11)" on arms whose data was in fact complete -- measured on 4 eval
+        # dirs including abl_R_134M_hyb_rnorm_none, a Table 1 row. The table generators were
+        # never affected: they glob NON-recursively and merge gsm8k explicitly.
+        # Fix: a file with NONE of the 11 Avg11 tasks can never be the right answer, so rank
+        # it below any file that has them.
+        AVG11 = {"arc_challenge", "arc_easy", "hellaswag", "openbookqa", "piqa", "sciq",
+                 "boolq", "copa", "winogrande", "race", "lambada_openai"}
+        def has_avg11(f: str) -> int:
+            try:
+                return 1 if AVG11 & set(json.load(open(f)).get("results", {})) else 0
+            except Exception:
+                return 0
+        cands.sort(key=lambda f: (has_avg11(f),
+                                  1 if "avg11reeval" in Path(f).name else 0,
+                                  Path(f).name))
         return Path(cands[-1])
     return p
 
