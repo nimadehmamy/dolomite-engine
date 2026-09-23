@@ -45,3 +45,10 @@ utc	jobid	job_name	kind	sparse_eval_dir	oracle_dir
 2026-09-23T01:19:15Z	1870345	sev_sp134_sw_m8	like	results/cmix32B/cmix_134M_sandwich_32B_sparse/milestones/sparseeval_tok8B_step32000	results/cmix32B/cmix_134M_sandwich_32B_sparse/milestones/unsharded_tok8B_step32000
 2026-09-23T01:19:19Z	1870346	sev_sp134_sw_m16	like	results/cmix32B/cmix_134M_sandwich_32B_sparse/milestones/sparseeval_tok16B_step62000	results/cmix32B/cmix_134M_sandwich_32B_sparse/milestones/unsharded_tok16B_step62000
 2026-09-23T01:19:24Z	1870347	sev_sp134_sw_m24	like	results/cmix32B/cmix_134M_sandwich_32B_sparse/milestones/sparseeval_tok24B_step92000	results/cmix32B/cmix_134M_sandwich_32B_sparse/milestones/unsharded_tok24B_step92000
+2026-09-23T04:52:11Z	1873891	sev_knob_tau035_step30518	like	results/knob2/knob_tau035/sparseeval_step30518	results/knob2/knob_tau035/unsharded_step30518
+2026-09-23T04:52:16Z	1873892	sev_knob_proxy_10x_step30518	like	results/knob2/knob_proxy_10x/sparseeval_step30518	results/knob2/knob_proxy_10x/unsharded_step30518
+2026-09-23T04:57:30Z	1873939	sev_knob_rep_off_step30518	like	results/knob2/knob_rep_off/sparseeval_step30518	results/knob2/knob_rep_off/unsharded_step30518
+2026-09-23T04:57:34Z	1873940	sev_knob_ctrl_aux1_step30518	like	results/knob2/knob_ctrl_aux1/sparseeval_step30518	results/knob2/knob_ctrl_aux1/unsharded_step30518
+2026-09-23T05:02:56Z	1873994	sev_knob_rnorm_none_step30518	like	results/knob2/knob_rnorm_none/sparseeval_step30518	results/knob2/knob_rnorm_none/unsharded_step30518
+2026-09-23T05:03:00Z	1873995	sev_knob_rep_10x_step30518	like	results/knob2/knob_rep_10x/sparseeval_step30518	results/knob2/knob_rep_10x/unsharded_step30518
+2026-09-23T05:40:25Z	1874459	sev_abl_U_both	like	results/iclr26_abl/abl_U_134M_sandwich_rnorm_none/sparseeval_step122070	results/iclr26_abl/abl_U_134M_sandwich_rnorm_none/unsharded_step122070
