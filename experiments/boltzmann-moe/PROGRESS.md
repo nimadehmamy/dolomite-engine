@@ -2264,3 +2264,50 @@ measured penalty is an upper bound.
   would have been the next victim). Milestones deferred until every final is redone.
 - Eval bursts must run **HF-offline**: 18 simultaneous jobs pulling MMLU's 57 configs got our IP
   HTTP-429'd and killed 5 evals in 3 minutes.
+
+## 2026-09-23 (late): full corpus secured on an independent fileset; repo published
+
+**Dataset.** `/proj/dmfexp/datasets-shared/granite-4-cmix-FULL/` holds a real 2.28 TB copy of all
+four cmix datasets — not hard links, and on the `dmfexp` fileset rather than `datasets`, so it
+survives both an owner `rm` and a purge of the source fileset. Files are mode 444 with a
+non-group-writable directory, which closes the in-place-truncation hole that a hard link cannot.
+
+Verified beyond byte sizes, because a `.bin`/`.idx` pair can be individually well-formed and mutually
+wrong without erroring in either direction: token counts read from each `.idx` match the source
+exactly (**570,709,988,064 tokens**: 268.7B + 267.9B + 13.0B + 21.1B), bytes/token 4.00, and the
+first and last document of each shard decode. Then a 40-step 2-GPU training smoke test ran clean
+(loss 7.936 -> 7.681) with the trainer itself reporting `Tokens per epoch: 265485990821` for `p2_1`.
+That last line is the cheapest possible full-vs-subset check on any future launch: a subset-backed
+run reports ~50B there.
+
+Readable by POSIX group `proj_dmfexp` — bsaha3, mau, bharat, csabath, ndehmamy verified. **rpanda is
+not in that group** and cannot read it. LSF `grp_ebm` is a scheduling group and governs nothing about
+file access.
+
+**Copy throughput was our own bug.** The first attempt averaged 106 MiB/s (~6 h projected) because
+the script wrapped `cp` in `ionice -c2 -n7`, the lowest I/O priority, as a single stream with the
+default block size. Parallel `dd bs=64M` with no `ionice` moved the whole 2.28 TB in **5 m 16 s**
+(~7.2 GB/s aggregate, 3.2 GB/s single-stream); the last 11 GiB of the already-started shard took 4
+seconds. `scripts/copy_corpus_fast_20260923.sh`.
+
+**Published to the fork** (`origin`, commits `990aebd3` and `24a5d4db`) so colleagues can run their
+own 400M: `configs/RECOMMENDED_400M_hybrid_best.yml` carries the shared data path, the shared
+group-writable blend cache, `routing_norm: none`, `mbs 4 / ga 4`, and the "LAUNCH AT EXACTLY 8 GPUs"
+warning, each with its evidence in the header.
+
+**Arms.** All four healthy on GPU, `grp_ebm` at 32/32 with all 32 ours. tokens/step verified
+empirically from the logs, not read off the configs.
+
+| arm | job | s/step (median, last 20) | step | tokens/step | ETA |
+|---|---|---|---|---|---|
+| `abl_Z1_allmoe_hyb` (6S1x6E) | 1884853 | 0.357 | 290/122070 | 262,146 | 12.1 h |
+| `abl_Z2_allmoe_bpos` (5S1x6E1S) | 1884856 | 0.233 | 430/122070 | 262,135 | 7.9 h |
+| `abl_Y_400M_sandwich` | 1876409 | 1.556 | 17050/61035 | 524,289 | 19.0 h |
+| `abl_X_400M_hybrid` | 1876408 | 3.368 | 11310/61035 | 524,288 | 46.5 h |
+
+`abl_Z1`'s first step took **36.4 s** (compile). A mean including it reads 2.292 s/step against the
+true 0.357, which looked like "6.3x slower than Z2, misses the deadline" and nearly triggered a
+needless kill-and-resubmit. Use a median over recent steps.
+
+Early routing health on `abl_Z1` (all-MoE, `routing_norm: none`, step 140): `effective_n_experts`
+15.21 of 16, `max_share` 0.112, `min_share` 0.038, 16/16 experts used. No collapse.

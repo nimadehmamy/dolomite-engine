@@ -959,8 +959,24 @@ dispatch + Sinkhorn are paid per application and are independent of `I_e`.
 - [x] Shared 275 GiB subset at `/proj/dmfexp/datasets-shared/granite-4-cmix-subset/` (group-readable)
 - [x] `cmix_134M_hybrid_32B_sparse_SHARED.yml` + README for colleagues
 - [x] Smoke-tested the SHARED config: 40 steps, 2 GPUs, loss 7.94->7.58, blend index cached
-- [ ] **Decide** on the 2 TB full web `.bin` (only needed for bit-exact reruns of published arms)
-- [ ] Tell colleagues the shared path exists (bharat et al. are in `proj_dmfexp`)
+- [x] **DONE 2026-09-23: full corpus copied.** `/proj/dmfexp/datasets-shared/granite-4-cmix-FULL/`
+      — 2.28 TB real copy (not hard links) on the `dmfexp` fileset, so it survives an owner `rm`
+      AND a purge of the `datasets` fileset. Mode 444, dir not group-writable, so it cannot be
+      truncated in place either. 570,709,988,064 tokens; `.idx` token counts match source exactly;
+      first/last doc of each shard decodes; 40-step 2-GPU smoke test clean with the trainer
+      reporting `Tokens per epoch: 265485990821` for `p2_1` (a subset run reports ~50B).
+      Validate with `scripts/validate_full_corpus_20260923.sh`. HANDOFF §26.
+- [x] Copy speed: `scripts/copy_corpus_fast_20260923.sh` — parallel `dd bs=64M`, NO `ionice`.
+      2.28 TB in 5m16s (~7.2 GB/s). The old 106 MiB/s was our own `ionice -c2 -n7` wrapper.
+- [x] Repo pushed to `origin` (nimadehmamy fork), commits `990aebd3` + `24a5d4db`, so colleagues can
+      take `configs/RECOMMENDED_400M_hybrid_best.yml` (shared data path, `routing_norm: none`,
+      mbs 4 / ga 4, 8 GPUs) and run their own 400M.
+- [ ] Tell colleagues the FULL shared path exists. Verified readable: bsaha3, mau, bharat, csabath.
+      **rpanda is NOT in `proj_dmfexp`** and cannot read it — needs a group add, or their own copy.
+      (LSF `grp_ebm` governs scheduling, not file access; the two were conflated earlier.)
+- [ ] Repoint `abl_X`/`abl_Y`/`abl_Z1`/`abl_Z2` to the shared path only at their NEXT restart, never
+      mid-run: the Megatron blend index is keyed on the paths, so changing them rebuilds the index
+      and changes the sample order. They read the same bytes either way.
 - [x] Extended web subsets to 50B tokens each (+230 GiB); verified and smoke-tested
 - [ ] If a 128B run is PUBLISHED, update the Setup claim "no arm revisits a document"
 - [ ] **Noted, user accepted 1.49 epochs**: the datamix single-epoch ceiling is 86B tokens, set by megamath having
