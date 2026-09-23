@@ -54,12 +54,24 @@ for f in sorted(glob.glob('configs/cmix/cmix*.yml')
     # 'probe' catches bsprobe/proxysvd-style throwaways: a 120-step batch probe technically
     # 'finishes', so without this the watcher spends a GPU evaluating a diagnostic.
     if any(t in n for t in ('feas','fixtest','tcptest','bisect','smoke','spmddiag',
-                            'probe','cal','diag')):
+                            'probe','cal','diag','ibtest','ibpair')):
+        continue
+    # 2026-09-23: name-substring filtering keeps losing this race -- the IB-vs-TCP transport
+    # probes were named _ibtest_* / _ibpair_* and matched nothing above, so TWELVE eval jobs
+    # were launched against 120-500 step diagnostics. Two structural rules that do not depend
+    # on remembering to add a substring:
+    #   (a) a leading underscore means scratch by convention (all our throwaways use it);
+    #   (b) anything whose save_path is under results/_smoke/ or results/_scratch/ is scratch,
+    #       which catches a probe even if someone names the config normally.
+    # The cost is not the GPU. An eval of a 120-step model can land in a results table and be
+    # read as an arm.
+    if os.path.basename(f).startswith('_'):
         continue
     try: c = yaml.safe_load(open(f))
     except Exception: continue
     sp = (c.get('save_args') or {}).get('save_path')
     if not sp: continue
+    if '/results/_smoke/' in sp or '/results/_scratch/' in sp: continue
     tot = c['training_parameters']['num_training_steps']
     j = os.path.join(sp, 'latest_checkpointed_iteration.json')
     if not os.path.exists(j): continue
