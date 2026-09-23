@@ -1,5 +1,19 @@
 # dolomite-engine — project-level instructions
 
+## Boltzmann-MoE ICLR 2026 paper — Overleaf location
+
+**The active paper draft lives outside this repo, in an Overleaf git-bridge clone:**
+`~/Code/overleaf/boltzmann-moe-ICLR-2026/` (remote `origin`, branch `main` — pushing there
+IS how the user sees the change, since that push goes straight to Overleaf). Bib file:
+`boltz_moe.bib` (only bib file actually `\bibliography`'d by `main.tex`).
+
+Full editing workflow, style rules, and paper structure are documented in
+[`experiments/boltzmann-moe/CLAUDE.md`](experiments/boltzmann-moe/CLAUDE.md) — read that
+file before touching the draft. It covers: the "edit directly" pull/edit/push round trip,
+the sign-convention and no-em-dash style rules, the 8-9 page main-body limit, and where
+each table (`tab:frontier`, `tab:pure`, `tab:cost`, `tab:threeway`, etc.) lives in
+`sec/experiments.tex` / `sec/appendix.tex`.
+
 ## Register-decode bug fix (2026-06-29)
 
 **Generation outputs from all `register_energy` checkpoints (V0, V1, V73, V41,
