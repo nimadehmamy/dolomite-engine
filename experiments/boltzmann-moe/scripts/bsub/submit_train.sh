@@ -163,6 +163,19 @@ if [ "${nnodes:-1}" -gt 1 ]; then
         echo "  NCCL: InfiniBand ENABLED (ALLOW_IB=1). If this dies at the first collective with"
         echo "        ncclRemoteError / IBV_WC_RETRY_EXC_ERR, that is the documented fabric fault."
         unset NCCL_IB_DISABLE
+        # PICK ONLY THE COMPUTE RAILS. This host class exposes 10 HCAs on TWO DIFFERENT IB SUBNETS:
+        # eight report "SM lid: 1923" and mlx5_1 / mlx5_6 report "SM lid: 1", and the PCIe topology
+        # pairs each storage rail PIX with a compute rail. All ten are Active/LinkUp at 400 Gb/s, so
+        # the fabric is NOT down. But if NCCL enumerates all ten and pairs a rail on one subnet with
+        # a peer's rail on the other, the remote QP never answers and you get exactly the reported
+        # IBV_WC_RETRY_EXC_ERR(12) -> ncclRemoteError "across 6+ HCAs, 7+ peers". That is a multi-rail
+        # SELECTION bug, not a broken fabric, and disabling IB outright was treating the symptom.
+        # Chosen at RUNTIME per node by majority SM lid, so it survives different HCA naming/counts.
+        if command -v ibstat >/dev/null 2>&1; then
+            _maj=\$(for d in \$(ibstat -l 2>/dev/null); do ibstat \$d 2>/dev/null | grep -m1 'SM lid:' | awk '{print \$3}'; done | sort | uniq -c | sort -rn | head -1 | awk '{print \$2}')
+            _hcas=\$(for d in \$(ibstat -l 2>/dev/null); do _s=\$(ibstat \$d 2>/dev/null | grep -m1 'SM lid:' | awk '{print \$3}'); [ "\$_s" = "\$_maj" ] && printf '%s,' \$d; done | sed 's/,\$//')
+            if [ -n "\$_hcas" ]; then export NCCL_IB_HCA="\$_hcas"; echo "  NCCL_IB_HCA=\$NCCL_IB_HCA (majority IB subnet SM lid \$_maj)"; fi
+        fi
     else
         export NCCL_IB_DISABLE=1
     fi
