@@ -1,0 +1,423 @@
+# abl_AB -- 400M DEEP, NO RECURRENCE (6 dense GPT then 6 DISTINCT energy-MoE blocks), rnorm=none.
+#
+# HIGH PRIORITY.  abl_H_400M_6G6E_deep is the only deep no-recurrence energy arm we have, and it was
+# NEVER rerun with routing_norm: none -- it is still on zscore, so it is the one arm in the 400M
+# tier that has not seen the single largest knob effect we measured.  At 134M, rnorm=none is
+# +1.49pp Avg11 on the block-position variant and +0.10pp on the hybrid, and it collapses the
+# 1.37pp block-placement penalty to 0.02pp.  It also does NOT collapse routing (least-used expert
+# 0.26% -> 5.1% of tokens, effK 13.79 -> 15.83 of 16) and is ~24% faster.  It IS worse on train
+# loss (+0.047 nats); for this knob loss has been the wrong signal three times, so select on Avg11.
+#
+# This is a RERUN, not a resume: the parent completed its cosine decay to the LR floor, so extending
+# the schedule and resuming would re-raise the LR mid-run.  Fresh save_path, fresh wandb name.
+#
+# ONLY deliberate differences from abl_H_400M_6G6E_deep: routing_norm zscore -> none on all six
+# energy blocks, the data path moved to the shared FULL corpus copy, and the run names.  The
+# architecture, schedule, mbs/ga, K, top_k, I_e, Sinkhorn and sparsity are untouched, so the
+# comparison against the parent isolates the routing normalisation.
+#
+# Kept at mbs 2 / ga 8 deliberately, matching the parent that ran to completion at a median
+# 1.509 s/step (~26 h for 32.0B).  mbs 4 / ga 4 would put tokens/call at 16,384 where sparse_forward
+# wins 2.1-2.4x instead of the 8,192 losing column, and would likely be much faster at identical
+# tokens/step -- but it raises activation memory on a 12-distinct-layer model and was not smoke
+# tested, and an OOM on this arm costs more than the hours it would save.  Worth trying separately.
+#
+# 61035 steps x 524,288 tok/step (8 GPU x mbs 2 x ga 8 x 4096) = 32.0B -- LAUNCH AT EXACTLY 8 GPUs.
+# No recurrence anywhere, so FLOPwt == ACTIVE == 238.02M and TOTAL == 399.85M (audit_config).
+# Data: the shared FULL corpus copy validated 2026-09-23, NOT the 18.6%-prefix subset.
+#
+# ABLATION H -- DEEP, NO RECURRENCE: 6 GPT + 6 DISTINCT energy blocks, each applied once.
+# Separates distinct depth from recurrent depth at matched TOTAL parameters.
+# I_total = 28,096 per block (K=32, I_e=878) -> total 399.855M (+0.018% vs the 400M hybrid).
+# Active 238.022M, FLOPwt 238.022M -- with no recurrence FLOPwt EQUALS active.
+# WARNING -- this arm spends 20.5% FEWER parameter-applications per token than the 400M hybrid
+# (238.0M vs 299.4M) and 26% fewer than abl_G. Iso-TOTAL does not mean iso-FLOP across these
+# structures; compare within a pair (H vs H-baseline), never H against G.
+# sinkhorn_mu_iters = 1 = this block's layer_iterations entry (pre-flight rule 9).
+# *** INTENDED GPU COUNT: 8 ***  mbs 2 x ga 8 x 4096 x 8 = 524,288 tok/step; 61,035 steps = 32.0B
+datasets:
+- class_name: MegatronDataset
+  data_name: Megatron
+  data_sampling_ratio: 1
+  class_args:
+    eval_steps: 2
+    data_cache_path: /proj/dmfexp/datasets-shared/.cache_megatron_cmix_FULL
+    data_path:
+    - 0.35
+    - /proj/dmfexp/datasets-shared/granite-4-cmix-FULL/web-nemotron-cc-hq-p2_0
+    - 0.35
+    - /proj/dmfexp/datasets-shared/granite-4-cmix-FULL/web-nemotron-cc-hq-p2_1
+    - 0.15
+    - /proj/dmfexp/datasets-shared/granite-4-cmix-FULL/megamath-web-pro_0
+    - 0.15
+    - /proj/dmfexp/datasets-shared/granite-4-cmix-FULL/finemath-3plus-rewritten_0
+    split: 99,0.5,0.5
+    sequence_length: 4096
+tokenizer_args:
+  tokenizer_name: /proj/dmfexp/datasets-shared/granite-4-cmix-FULL/tokenizers/granite-4.0-tiktoken
+model_args:
+  model_class: AutoModelForCausalLM
+  pretrained_config:
+    model_type: energy
+    num_iterations: 1
+    num_pre_layers: 0
+    num_post_layers: 0
+    layer_iterations:
+    - 1
+    - 1
+    - 1
+    - 1
+    - 1
+    - 1
+    - 1
+    - 1
+    - 1
+    - 1
+    - 1
+    - 1
+    initializer_range: 0.02
+    layer_norm_epsilon: 1.0e-05
+    normalization_function: rmsnorm
+    position_embedding_type: rope
+    rope_dim: 64
+    hidden_size: 1024
+    num_layers: 12
+    init_method: normal
+    tie_word_embeddings: true
+    energy_proj_type: psd_anti
+    bos_token_id: 100257
+    eos_token_id: 100257
+    pad_token_id: 100256
+    vocab_size: 100352
+    max_position_embeddings: 4096
+    sequence_mixer_blocks:
+    - sequence_mixer_type: softmax_attention
+      num_attention_heads: 16
+      num_key_value_heads: 16
+      add_bias: false
+      attention_multiplier: 0.125
+    - sequence_mixer_type: softmax_attention
+      num_attention_heads: 16
+      num_key_value_heads: 16
+      add_bias: false
+      attention_multiplier: 0.125
+    - sequence_mixer_type: softmax_attention
+      num_attention_heads: 16
+      num_key_value_heads: 16
+      add_bias: false
+      attention_multiplier: 0.125
+    - sequence_mixer_type: softmax_attention
+      num_attention_heads: 16
+      num_key_value_heads: 16
+      add_bias: false
+      attention_multiplier: 0.125
+    - sequence_mixer_type: softmax_attention
+      num_attention_heads: 16
+      num_key_value_heads: 16
+      add_bias: false
+      attention_multiplier: 0.125
+    - sequence_mixer_type: softmax_attention
+      num_attention_heads: 16
+      num_key_value_heads: 16
+      add_bias: false
+      attention_multiplier: 0.125
+    - sequence_mixer_type: energy_attention
+      num_attention_heads: 16
+      num_key_value_heads: 16
+      add_bias: false
+      attention_multiplier: 0.125
+    - sequence_mixer_type: energy_attention
+      num_attention_heads: 16
+      num_key_value_heads: 16
+      add_bias: false
+      attention_multiplier: 0.125
+    - sequence_mixer_type: energy_attention
+      num_attention_heads: 16
+      num_key_value_heads: 16
+      add_bias: false
+      attention_multiplier: 0.125
+    - sequence_mixer_type: energy_attention
+      num_attention_heads: 16
+      num_key_value_heads: 16
+      add_bias: false
+      attention_multiplier: 0.125
+    - sequence_mixer_type: energy_attention
+      num_attention_heads: 16
+      num_key_value_heads: 16
+      add_bias: false
+      attention_multiplier: 0.125
+    - sequence_mixer_type: energy_attention
+      num_attention_heads: 16
+      num_key_value_heads: 16
+      add_bias: false
+      attention_multiplier: 0.125
+    mlp_blocks:
+    - mlp_type: MLP
+      activation_function: swiglu
+      intermediate_size: 4096
+      add_bias: false
+    - mlp_type: MLP
+      activation_function: swiglu
+      intermediate_size: 4096
+      add_bias: false
+    - mlp_type: MLP
+      activation_function: swiglu
+      intermediate_size: 4096
+      add_bias: false
+    - mlp_type: MLP
+      activation_function: swiglu
+      intermediate_size: 4096
+      add_bias: false
+    - mlp_type: MLP
+      activation_function: swiglu
+      intermediate_size: 4096
+      add_bias: false
+    - mlp_type: MLP
+      activation_function: swiglu
+      intermediate_size: 4096
+      add_bias: false
+    - mlp_type: EnergyFF_BoltzmannMoE
+      expert_kind: hopfield
+      intermediate_size: 28096
+      n_experts: 32
+      top_k: 2
+      hopfield_grad_scale: sqrt_consistent
+      routing_norm: none
+      temperature: 1.0
+      repulsion_form: abs
+      repulsion_coef: 0.1
+      repulsion_space: output
+      cos_probe_interval: 100
+      n_repulsion_pairs: 4
+      gelu_grad_method: sigmoid
+      e_sign_override: pos
+      sinkhorn_iters: 3
+      sinkhorn_persist_mu: true
+      sinkhorn_mu_iters: 1
+      repulsion_tensor_idx: true
+      renormalize_topk: true
+      fused_experts: true
+      sparse_start_step: 300
+      sparse_forward: true
+      sparse_candidates: 2
+      sparse_explore: 2
+      proxy_rank: 16
+      proxy_kind: subspace
+      proxy_out_dim: 512
+      proxy_iters: 1
+      proxy_loss_coef: 0.01
+      activation_function: gelu
+      add_bias: false
+      repulsion_subsample: 64
+      proxy_init: svd
+    - mlp_type: EnergyFF_BoltzmannMoE
+      expert_kind: hopfield
+      intermediate_size: 28096
+      n_experts: 32
+      top_k: 2
+      hopfield_grad_scale: sqrt_consistent
+      routing_norm: none
+      temperature: 1.0
+      repulsion_form: abs
+      repulsion_coef: 0.1
+      repulsion_space: output
+      cos_probe_interval: 100
+      n_repulsion_pairs: 4
+      gelu_grad_method: sigmoid
+      e_sign_override: pos
+      sinkhorn_iters: 3
+      sinkhorn_persist_mu: true
+      sinkhorn_mu_iters: 1
+      repulsion_tensor_idx: true
+      renormalize_topk: true
+      fused_experts: true
+      sparse_start_step: 300
+      sparse_forward: true
+      sparse_candidates: 2
+      sparse_explore: 2
+      proxy_rank: 16
+      proxy_kind: subspace
+      proxy_out_dim: 512
+      proxy_iters: 1
+      proxy_loss_coef: 0.01
+      activation_function: gelu
+      add_bias: false
+      repulsion_subsample: 64
+      proxy_init: svd
+    - mlp_type: EnergyFF_BoltzmannMoE
+      expert_kind: hopfield
+      intermediate_size: 28096
+      n_experts: 32
+      top_k: 2
+      hopfield_grad_scale: sqrt_consistent
+      routing_norm: none
+      temperature: 1.0
+      repulsion_form: abs
+      repulsion_coef: 0.1
+      repulsion_space: output
+      cos_probe_interval: 100
+      n_repulsion_pairs: 4
+      gelu_grad_method: sigmoid
+      e_sign_override: pos
+      sinkhorn_iters: 3
+      sinkhorn_persist_mu: true
+      sinkhorn_mu_iters: 1
+      repulsion_tensor_idx: true
+      renormalize_topk: true
+      fused_experts: true
+      sparse_start_step: 300
+      sparse_forward: true
+      sparse_candidates: 2
+      sparse_explore: 2
+      proxy_rank: 16
+      proxy_kind: subspace
+      proxy_out_dim: 512
+      proxy_iters: 1
+      proxy_loss_coef: 0.01
+      activation_function: gelu
+      add_bias: false
+      repulsion_subsample: 64
+      proxy_init: svd
+    - mlp_type: EnergyFF_BoltzmannMoE
+      expert_kind: hopfield
+      intermediate_size: 28096
+      n_experts: 32
+      top_k: 2
+      hopfield_grad_scale: sqrt_consistent
+      routing_norm: none
+      temperature: 1.0
+      repulsion_form: abs
+      repulsion_coef: 0.1
+      repulsion_space: output
+      cos_probe_interval: 100
+      n_repulsion_pairs: 4
+      gelu_grad_method: sigmoid
+      e_sign_override: pos
+      sinkhorn_iters: 3
+      sinkhorn_persist_mu: true
+      sinkhorn_mu_iters: 1
+      repulsion_tensor_idx: true
+      renormalize_topk: true
+      fused_experts: true
+      sparse_start_step: 300
+      sparse_forward: true
+      sparse_candidates: 2
+      sparse_explore: 2
+      proxy_rank: 16
+      proxy_kind: subspace
+      proxy_out_dim: 512
+      proxy_iters: 1
+      proxy_loss_coef: 0.01
+      activation_function: gelu
+      add_bias: false
+      repulsion_subsample: 64
+      proxy_init: svd
+    - mlp_type: EnergyFF_BoltzmannMoE
+      expert_kind: hopfield
+      intermediate_size: 28096
+      n_experts: 32
+      top_k: 2
+      hopfield_grad_scale: sqrt_consistent
+      routing_norm: none
+      temperature: 1.0
+      repulsion_form: abs
+      repulsion_coef: 0.1
+      repulsion_space: output
+      cos_probe_interval: 100
+      n_repulsion_pairs: 4
+      gelu_grad_method: sigmoid
+      e_sign_override: pos
+      sinkhorn_iters: 3
+      sinkhorn_persist_mu: true
+      sinkhorn_mu_iters: 1
+      repulsion_tensor_idx: true
+      renormalize_topk: true
+      fused_experts: true
+      sparse_start_step: 300
+      sparse_forward: true
+      sparse_candidates: 2
+      sparse_explore: 2
+      proxy_rank: 16
+      proxy_kind: subspace
+      proxy_out_dim: 512
+      proxy_iters: 1
+      proxy_loss_coef: 0.01
+      activation_function: gelu
+      add_bias: false
+      repulsion_subsample: 64
+      proxy_init: svd
+    - mlp_type: EnergyFF_BoltzmannMoE
+      expert_kind: hopfield
+      intermediate_size: 28096
+      n_experts: 32
+      top_k: 2
+      hopfield_grad_scale: sqrt_consistent
+      routing_norm: none
+      temperature: 1.0
+      repulsion_form: abs
+      repulsion_coef: 0.1
+      repulsion_space: output
+      cos_probe_interval: 100
+      n_repulsion_pairs: 4
+      gelu_grad_method: sigmoid
+      e_sign_override: pos
+      sinkhorn_iters: 3
+      sinkhorn_persist_mu: true
+      sinkhorn_mu_iters: 1
+      repulsion_tensor_idx: true
+      renormalize_topk: true
+      fused_experts: true
+      sparse_start_step: 300
+      sparse_forward: true
+      sparse_candidates: 2
+      sparse_explore: 2
+      proxy_rank: 16
+      proxy_kind: subspace
+      proxy_out_dim: 512
+      proxy_iters: 1
+      proxy_loss_coef: 0.01
+      activation_function: gelu
+      add_bias: false
+      repulsion_subsample: 64
+      proxy_init: svd
+tuning_args:
+  tuning_method: pretraining
+save_args:
+  save_path: /proj/dmfexp/nima/Code/dolomite-engine/experiments/boltzmann-moe/results/iclr26_abl/abl_AB_400M_6G6E_deep_rnormnone
+  save_interval: 200
+  max_to_keep: 2
+logging_args:
+  log_interval: 10
+  experiments_tracker_name: wandb
+  wandb_args:
+    project: energy-inference-large
+    name: abl_AB_400M_6G6E_deep_rnormnone
+training_parameters:
+  num_training_steps: 61035
+  eval_interval: 5000
+  micro_batch_size: 2
+  gradient_accumulation_steps: 8
+  eval_during_training: false
+  gradient_clipping: 1
+optimizer_args:
+  class_name: TorchAdamW
+  class_args:
+    lr: 2e-3
+    weight_decay: 0.1
+    betas:
+    - 0.9
+    - 0.95
+    eps: 1.0e-08
+lr_scheduler_args:
+  lr_decay_style: cosine
+  lr_decay_factor: 0.1
+  num_warmup_steps: 2000
+  num_constant_steps: 0
+  num_decay_steps: 59035
+mixed_precision_args:
+  dtype: bf16
+distributed_args:
+  fsdp_algorithm: 2
+  gradient_checkpointing_method: block
+  torch_compile: true
+  stage: 0
