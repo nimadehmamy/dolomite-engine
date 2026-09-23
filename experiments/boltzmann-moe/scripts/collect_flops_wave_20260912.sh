@@ -46,7 +46,15 @@ OUT=$REPO/experiments/boltzmann-moe/results/router_analysis
 mkdir -p "$HOME/bsub_logs" "$OUT"
 MODE="${1:-status}"
 
-arms() { for d in $CFGDIRS; do ls $d/*.yml 2>/dev/null; done | xargs -n1 basename | sed 's/\.yml$//' | sort -u; }
+# 2026-09-23: `grep -v '^_'` excludes SCRATCH configs. This function had no filter at all, so
+# every .yml in CFGDIRS became an eval candidate the moment its checkpoint reached
+# num_training_steps -- and a 120-step transport probe reaches its target immediately. That
+# launched TEN eval jobs against the IB-vs-TCP diagnostics, twice (they came back on the next
+# babysitter cycle after the first kill, because THIS is the driver the babysitter calls, not
+# auto_eval_on_finish.sh). Leading underscore is our convention for a throwaway.
+# The real hazard is not the wasted GPU: an eval of a 120-step model can land in a results table
+# and be read as an arm.
+arms() { for d in $CFGDIRS; do ls $d/*.yml 2>/dev/null; done | xargs -n1 basename | sed 's/\.yml$//' | grep -v '^_' | sort -u; }
 step_of() {
     local f="$(res_of "$1")/latest_checkpointed_iteration.json"
     [ -f "$f" ] && grep -oE '[0-9]+' "$f" | head -1 || echo 0
