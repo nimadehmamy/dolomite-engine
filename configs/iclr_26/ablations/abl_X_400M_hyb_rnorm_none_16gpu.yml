@@ -1,0 +1,224 @@
+# abl_X AT 16 GPUS -- resume of the SAME run, not a new arm. Prepared 2026-09-23.
+#
+# PURPOSE: abl_X is the critical 400M hybrid (routing_norm=none) and has ~44 h left at 8 GPUs.
+# At 16 GPUs it is ~25 h. The switch is only worth doing once 8 more GPUs exist on grp_ebm, which
+# happens when abl_AA finishes (it is the earliest release). scripts/watchdog/abl_X_16gpu_switch.sh
+# does the waiting and the kill; the watchdog then resubmits from THIS file.
+#
+# WHY IT CAN RESUME ACROSS A WORLD-SIZE CHANGE -- three things had to hold, all verified in the code:
+#  1. MODEL + OPTIMIZER: dcp.load with DefaultLoadPlanner(allow_partial_load=True). DCP reshards by
+#     design, and at stage: 0 params are REPLICATED (fsdp=1), so there is nothing to reshard anyway.
+#  2. DATA POSITION: recovered ARITHMETICALLY, not from per-rank files. pretrain.py:480 writes
+#     "consumed_samples": global_step * global_batch_size into metadata.json and line 669 rebuilds
+#     the dataloader from it. Verified on the live checkpoint: 1,843,200 / 14,400 = 128 sequences
+#     per step. 16 x mbs4 x ga2 x 4096 = 524,288 tok/step = 128 sequences -- IDENTICAL to 8 x 4 x 4.
+#     THIS IS WHY ga MUST DROP 4 -> 2. If tokens/step changed, consumed_samples would point at the
+#     wrong offset and the LR schedule and token budget would both be wrong.
+#  3. DATALOADER STATE FILES: none exist. pretrain.py:476 passes train_dataloader=None to
+#     save_checkpoint, which is why abl_Y has resumed 8 times cleanly.
+# The one thing that does NOT survive is rng_state -- see load_args below.
+#
+# WHAT CHANGES vs the 8-GPU config: gradient_accumulation_steps 4 -> 2, and load_args added.
+# Nothing else. Same data, same schedule, same architecture, same tokens/step, same total budget.
+#
+# ACCEPTED COST: the Megatron blend index rebuilds (it would on any restart anyway, since the data
+# path was repointed to the shared copy on 2026-09-23), so the sample ORDER past step ~14400 may
+# differ slightly. At under one epoch on byte-identical data that is statistically harmless but not
+# bit-exact. Also multi-node startup is ~50% flaky with a LOUD ncclRemoteError; the watchdog
+# resubmits automatically. repulsion_space is output, so the silent weight-space wedge cannot bite.
+#
+# LAUNCH AT EXACTLY 16 GPUs. The watchdog entry says 16 and packs 8/node = 2 nodes with blaunch.
+#
+datasets:
+- class_name: MegatronDataset
+  data_name: Megatron
+  data_sampling_ratio: 1
+  class_args:
+    eval_steps: 2
+    data_cache_path: /proj/dmfexp/nima/.cache/megatron_cmix
+    data_path:
+    - 0.35
+    - /proj/dmfexp/datasets-shared/granite-4-cmix-FULL/web-nemotron-cc-hq-p2_0
+    - 0.35
+    - /proj/dmfexp/datasets-shared/granite-4-cmix-FULL/web-nemotron-cc-hq-p2_1
+    - 0.15
+    - /proj/dmfexp/datasets-shared/granite-4-cmix-FULL/megamath-web-pro_0
+    - 0.15
+    - /proj/dmfexp/datasets-shared/granite-4-cmix-FULL/finemath-3plus-rewritten_0
+    split: 99,0.5,0.5
+    sequence_length: 4096
+tokenizer_args:
+  tokenizer_name: /proj/datasets/tokenizers/granite-4.0-tiktoken
+model_args:
+  model_class: AutoModelForCausalLM
+  pretrained_config:
+    model_type: energy
+    num_iterations: 1
+    num_pre_layers: 0
+    num_post_layers: 0
+    layer_iterations:
+    - 1
+    - 1
+    - 1
+    - 1
+    - 1
+    - 1
+    - 6
+    initializer_range: 0.02
+    layer_norm_epsilon: 1.0e-05
+    normalization_function: rmsnorm
+    position_embedding_type: rope
+    rope_dim: 64
+    hidden_size: 1024
+    num_layers: 7
+    init_method: normal
+    tie_word_embeddings: true
+    energy_proj_type: psd_anti
+    bos_token_id: 100257
+    eos_token_id: 100257
+    pad_token_id: 100256
+    vocab_size: 100352
+    max_position_embeddings: 4096
+    sequence_mixer_blocks:
+    - sequence_mixer_type: softmax_attention
+      num_attention_heads: 16
+      num_key_value_heads: 16
+      add_bias: false
+      attention_multiplier: 0.125
+    - sequence_mixer_type: softmax_attention
+      num_attention_heads: 16
+      num_key_value_heads: 16
+      add_bias: false
+      attention_multiplier: 0.125
+    - sequence_mixer_type: softmax_attention
+      num_attention_heads: 16
+      num_key_value_heads: 16
+      add_bias: false
+      attention_multiplier: 0.125
+    - sequence_mixer_type: softmax_attention
+      num_attention_heads: 16
+      num_key_value_heads: 16
+      add_bias: false
+      attention_multiplier: 0.125
+    - sequence_mixer_type: softmax_attention
+      num_attention_heads: 16
+      num_key_value_heads: 16
+      add_bias: false
+      attention_multiplier: 0.125
+    - sequence_mixer_type: softmax_attention
+      num_attention_heads: 16
+      num_key_value_heads: 16
+      add_bias: false
+      attention_multiplier: 0.125
+    - sequence_mixer_type: energy_attention
+      num_attention_heads: 16
+      num_key_value_heads: 16
+      add_bias: false
+      attention_multiplier: 0.125
+    mlp_blocks:
+    - mlp_type: MLP
+      activation_function: swiglu
+      intermediate_size: 4096
+      add_bias: false
+    - mlp_type: MLP
+      activation_function: swiglu
+      intermediate_size: 4096
+      add_bias: false
+    - mlp_type: MLP
+      activation_function: swiglu
+      intermediate_size: 4096
+      add_bias: false
+    - mlp_type: MLP
+      activation_function: swiglu
+      intermediate_size: 4096
+      add_bias: false
+    - mlp_type: MLP
+      activation_function: swiglu
+      intermediate_size: 4096
+      add_bias: false
+    - mlp_type: MLP
+      activation_function: swiglu
+      intermediate_size: 4096
+      add_bias: false
+    - mlp_type: EnergyFF_BoltzmannMoE
+      expert_kind: hopfield
+      intermediate_size: 187872
+      n_experts: 32
+      top_k: 2
+      hopfield_grad_scale: sqrt_consistent
+      routing_norm: none
+      temperature: 1.0
+      repulsion_form: abs
+      repulsion_coef: 0.1
+      repulsion_space: output
+      cos_probe_interval: 100
+      n_repulsion_pairs: 4
+      gelu_grad_method: sigmoid
+      e_sign_override: pos
+      sinkhorn_iters: 3
+      sinkhorn_persist_mu: true
+      sinkhorn_mu_iters: 6
+      repulsion_tensor_idx: true
+      renormalize_topk: true
+      fused_experts: true
+      sparse_start_step: 300
+      sparse_forward: true
+      sparse_candidates: 2
+      sparse_explore: 2
+      proxy_rank: 16
+      proxy_kind: subspace
+      proxy_out_dim: 512
+      proxy_iters: 1
+      proxy_loss_coef: 0.01
+      activation_function: gelu
+      add_bias: false
+      repulsion_subsample: 64
+      proxy_init: svd
+tuning_args:
+  tuning_method: pretraining
+save_args:
+  save_path: /proj/dmfexp/nima/Code/dolomite-engine/experiments/boltzmann-moe/results/cmix/abl_X_400M_hyb_rnorm_none
+  save_interval: 200
+  max_to_keep: 2
+logging_args:
+  log_interval: 10
+  experiments_tracker_name: wandb
+  wandb_args:
+    project: energy-inference-large
+    name: abl_X_400M_hyb_rnorm_none
+training_parameters:
+  num_training_steps: 61035
+  eval_interval: 5000
+  micro_batch_size: 4
+  gradient_accumulation_steps: 2
+  eval_during_training: false
+  gradient_clipping: 1
+optimizer_args:
+  class_name: TorchAdamW
+  class_args:
+    lr: 2e-3
+    weight_decay: 0.1
+    betas:
+    - 0.9
+    - 0.95
+    eps: 1.0e-08
+lr_scheduler_args:
+  lr_decay_style: cosine
+  lr_decay_factor: 0.1
+  num_warmup_steps: 2000
+  num_constant_steps: 53000
+  num_decay_steps: 6035
+mixed_precision_args:
+  dtype: bf16
+distributed_args:
+  fsdp_algorithm: 2
+  gradient_checkpointing_method: block
+  torch_compile: true
+  stage: 0
+load_args:
+  load_path: /proj/dmfexp/nima/Code/dolomite-engine/experiments/boltzmann-moe/results/cmix/abl_X_400M_hyb_rnorm_none
+  # MUST be false at a CHANGED GPU COUNT. rng_state is saved one file per global rank
+  # (checkpointing/__init__.py:569, rng_state-<rank>.pt) and the checkpoint holds exactly 8.
+  # At 16 ranks, ranks 8-15 would torch.load a path that does not exist and line 411 has NO
+  # guard -- FileNotFoundError, half the ranks dead at startup.
+  load_rng_state: false
