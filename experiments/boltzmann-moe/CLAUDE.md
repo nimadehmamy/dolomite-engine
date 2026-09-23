@@ -91,6 +91,15 @@
 > 4. **Token budget and GPU count** — `GPUS x mbs x ga x seq`, and GPUS IS NOT IN THE CONFIG.
 > 5. **Params**: `energy_ff_paramcount.audit_config` TOTAL / ACTIVE / FLOPwt against the arm it
 >    will be compared with, and say which of the three are matched and which are not.
+> 6. **PER-EXPERT WIDTH — added 2026-09-23 after `abl_P` was lost to it.** `intermediate_size` is the
+>    TOTAL across experts, so print `I_e = intermediate_size / n_experts` and `I_e / hidden_size` for
+>    every mixture block and compare with the arm you will judge against. `abl_P_134M_pure_223_isoall`
+>    passed point 5 at 0.11% on all three totals and still trained worse than every other arm at every
+>    step, because three distinct MoE blocks sharing one block's parameter budget put `I_e` at **96-144
+>    (0.09-0.13x hidden)** against the hybrid's 1024 (1.33x) and the pure arm's 4480 (5.83x). This
+>    file's own B-series note already says "experts too small -- fails" and "do not scale the iso-param
+>    design". **Totals matching to 0.1% is exactly what shrinking the experts buys you, so point 5
+>    cannot catch this.** Treat `I_e / hidden < ~0.5` as dead on arrival unless that IS the experiment.
 >
 > Report those five, wait, then submit. A wrong datamix or a wrong `layer_iterations` is not
 > recoverable — it is a wasted multi-day run against a deadline.
