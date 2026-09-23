@@ -247,6 +247,87 @@
 > tables are still on `avg10`/`avg9`. If you find yourself opening `paper_v2.tex` or
 > `boltz_moe.tex` to answer an ICLR question, stop — you are in the wrong paper.
 
+> ## ✍️ "EDIT DIRECTLY" / "EDIT DRAFT" = PULL, EDIT, PUSH TO OVERLEAF
+>
+> **User instruction, 2026-09-23.** When the user says **"edit directly"** or **"edit draft"**, do
+> not paste LaTeX into the chat for them to copy. Run the whole round trip so they can review the
+> rendered result on Overleaf:
+>
+> ```bash
+> cd ~/Code/overleaf/boltzmann-moe-ICLR-2026
+> git pull                      # ALWAYS first -- they edit on Overleaf concurrently
+> #   ... edit sec/*.tex ...
+> rm -f main.aux main.out main.pdf   # Overleaf build artifacts; never commit them
+> git add -A sec/ && git commit && git push origin main
+> ```
+>
+> `origin` is the Overleaf git bridge and `main` is the only branch; pushing there IS how the user
+> sees the change, so the usual "never push to main" caution does not apply to this repo. Tell them
+> the commit hash when done.
+>
+> **Four things that have already gone wrong doing this:**
+> 1. **`git pull` first, every time.** The user edits in the Overleaf UI, which commits as
+>    `Update on Overleaf.`; skipping the pull turns a 10-second edit into a merge.
+> 2. **Back up `sec/` before any mechanical rename** (`cp -r sec /tmp/sec_backup_$(date +%s)`) and
+>    diff against it afterwards. A regex with an optional-brace group
+>    (`S_\{?([ikB])\}?`) silently ATE the closing brace of `$e^{-\beta S_k}$` on 6 lines, producing
+>    `$e^{-\beta E_k$`. `pdflatex` cannot run in this environment, so LaTeX breakage is only
+>    discovered on Overleaf. **Verify brace balance per file against the backup.**
+> 3. **Check a new symbol is not already a substring of an existing macro.** `m_i` looked free but
+>    is the tail of every `\sum_i`, so any future `sed` on `m_i` would corrupt them. `a_i` was
+>    genuinely free. Grep the ORIGINAL before choosing.
+> 4. **Assert each replacement matches exactly once** before writing. Prose identities change
+>    meaning under a rename: `$s_k = -S_k = +E_k$` became the circular `$a_k = -E_k = +a_k$` and
+>    had to be rewritten by hand, not by pattern.
+>
+> **SIGN CONVENTION (unified 2026-09-23, commit `ad60056`).** The draft used to carry THREE symbols
+> for one quantity up to sign -- `E_k` (overlap, non-negative), `S_k = -E_k` (state energy), and
+> `s_k` (routing logit, `= +E_k`) -- which is how the routing-sign bug survived review. Now two:
+>
+> | symbol | meaning | invariant |
+> |---|---|---|
+> | `E_x` | **always an energy** | every Boltzmann weight is `e^{-\beta E}` |
+> | `a_x` | the **overlap**, `E_x = -a_x` | **APPENDIX ONLY** (it is what the code stores); the body uses `E` alone |
+>
+> `s_k` is gone. **Before pushing any change that touches a sign, re-run the invariant check:**
+> ```bash
+> grep -rcoE 'S_\{?[ikB]\}?' sec/*.tex          # must be 0 everywhere
+> grep -rnoE 'softmax[^)]{0,34}' sec/theory.tex  # every argument: -\beta E or \beta a
+> ```
+
+> ## ✏️ PAPER STYLE: NO EM DASHES `---` IN LATEX. RESTRUCTURE, DO NOT SUBSTITUTE.
+>
+> **User instruction, 2026-09-23.** The em dash `---` is banned from the draft. In order of
+> preference:
+>
+> 1. **Restructure the sentence.** Start a new sentence, or use commas, or parentheses. This is
+>    what the user actually wants: "just change your style". An em dash is usually a sign that two
+>    independent clauses got welded together.
+> 2. **En dash `--`** only as a fallback, where restructuring would damage someone else's prose.
+>
+> Applied in `sec/{intro,related,app_related,theory}.tex` as of 2026-09-23. **Still outstanding:
+> `sec/appendix.tex` (301) and `sec/experiments.tex` (38)** -- left alone because another agent was
+> editing those files. Do them when those files are free. `main.tex:20` is ICLR author-block
+> boilerplate, not our prose; leave it.
+>
+> Count them with `grep -c -- '---' sec/*.tex`. Note the `--` before the pattern, or `grep` reads
+> `---` as a flag.
+
+> ## 📐 MAIN PAPER IS 8-9 PAGES. DETAIL GOES TO THE APPENDIX.
+>
+> **User instruction, 2026-09-23.** The ICLR main body must fit 8-9 pages, so computation and
+> experiment detail belongs in the appendix, not the body.
+>
+> **Structure as of 2026-09-23:** `sec/related.tex` is a SHORT two-paragraph section after the
+> intro; the long version lives in **`sec/app_related.tex`** (`\label{app:related}`), wired into
+> `main.tex` immediately after `\appendix` and BEFORE `\input{sec/appendix}`. Keep that split when
+> adding related work: one or two sentences in the body, the full account in `app_related`.
+>
+> `sec/intro.tex` ends with a **`\paragraph{Contributions.}` itemize**. Prose cut from the intro is
+> PARKED VERBATIM in `sec/outtakes.tex` rather than deleted, because its `\CC{}` notes record
+> measurements and retractions that exist nowhere else. `outtakes.tex` and `debug.tex` are both
+> `\input` by `main.tex` and must BOTH be removed before submission.
+
 > ## 🔴 TWO 2026-09-15 FINDINGS THAT INVALIDATE EARLIER CONCLUSIONS — READ BEFORE TRUSTING ANY ROUTING OR s/step CLAIM
 >
 > **1. The composable Boltzmann router is SIGN-INVERTED.**
