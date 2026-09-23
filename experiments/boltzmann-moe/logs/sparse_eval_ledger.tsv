@@ -37,3 +37,5 @@ utc	jobid	job_name	kind	sparse_eval_dir	oracle_dir
 2026-09-22T22:01:33Z	1867565	sevg2_sandwich	gsm	results/iclr_sink/iclr_big_hop_sandwich_sink/sparseeval_r16m512	results/iclr_sink/iclr_big_hop_sandwich_sink/unsharded_mucal
 2026-09-22T22:01:36Z	1867566	sev2_pureT12	like	results/iclr_sink/pure_hop_T12_sink/sparseeval_r16m512	results/iclr_sink/pure_hop_T12_sink/unsharded_mucal2
 2026-09-22T22:01:39Z	1867567	sevg2_pureT12	gsm	results/iclr_sink/pure_hop_T12_sink/sparseeval_r16m512	results/iclr_sink/pure_hop_T12_sink/unsharded_mucal2
+2026-09-23T00:01:28Z	1869099	sev_pure_mucal	like	results/cmix32B/cmix_134M_pure_32B_sparse/sparseeval_mucal	results/cmix32B/cmix_134M_pure_32B_sparse/unsharded_mucal
+2026-09-23T00:05:14Z	1869319	sev_abl_C_both	like	results/iclr26_abl/abl_C_134M_1G1x6E1G_isototal/sparseeval_step122070	results/iclr26_abl/abl_C_134M_1G1x6E1G_isototal/unsharded_step122070
