@@ -175,3 +175,36 @@ case a run is live on them: repointing changes the Megatron blend index, which i
 so a restart would rebuild it and change the sample order. **Repoint them to
 `/proj/dmfexp/datasets-shared/granite-4-cmix-FULL` before the next launch** — the owners may delete
 that tree at any time, and a job that is running survives it only until its next requeue.
+
+---
+
+# 1B configs updated 2026-09-23 — READ BEFORE RELAUNCHING
+
+All six (`bharat_1B_*.yml` and both `fallback/*.yml`) now read
+`/proj/dmfexp/datasets-shared/granite-4-cmix-FULL` with the shared blend cache and tokenizer, and all
+30 energy blocks moved from `routing_norm: zscore` to **`none`** (our largest measured knob: at 134M
++1.49pp Avg11 on the block-position variant, it collapses a 1.37pp block-placement penalty to 0.02pp,
+does not collapse routing, and is ~24% faster; it IS worse on train loss, so select on Avg11).
+
+**Two bugs found while doing it:**
+
+1. **`bharat_1B_8S8E_boltz.yml` would have crashed at startup.** It had `proxy_rank: 16` with
+   `fused_experts: false`, and `energy_ff.py:1090` asserts against exactly that, because the looped
+   expert path never runs the proxy so it would silently never be trained. Now `fused_experts: true`
+   and `sparse_forward: true`, matching `bharat_1B_18L_allMoE_boltz`.
+2. **`bharat_1B_16S_switch_baseline.yml` and `bharat_1B_8S8E_boltz.yml` were reading the biased
+   18.6%-prefix subset** while the 18L pair read the full corpus. That prefix is **~0.47 nats
+   easier**, so any Switch-vs-energy comparison across those files was confounded. Both now read the
+   full copy. **Numbers already collected from those two files are not comparable to the 18L pair.**
+
+**Budget:** all six are `61035 steps x mbs 2 x ga 8 x 4096`. tokens/step = `GPUS x mbs x ga x seq`, so
+8 GPUs gives 32.0B, 16 gives 64.0B, 32 gives 128.0B. **Use 16 or 32 GPUs, never 24** — 524,288
+tok/step is 128 sequences and 128/24 is not an integer, so no `mbs x ga` hits the budget exactly.
+
+**One speed lever not applied:** `mbs 2` puts tokens/call at 8,192, the column where `sparse_forward`
+LOSES (0.41–0.49x); 16,384 is where it wins 2.1–2.4x. `mbs 4 / ga 4` keeps tokens/step identical and
+should be much faster, but at d=1536 x 18 layers it raises activation memory and is untested. Worth
+one short probe before committing a multi-day launch.
+
+**On the `Tokens per epoch:` check** — the trainer prints it per shard at startup. The two web shards
+must read ~265–266e9. ~50e9 means you are back on the biased subset.

@@ -150,7 +150,24 @@ export NCCL_DEBUG=WARN
 # SET FROM $nnodes, NOT BY HAND: this was added temporarily, reverted, and then three multi-node
 # arms were launched without it and sat dead at step 0. Encoding it removes that failure mode.
 # Single node needs no inter-node transport, so leaving it off there costs nothing.
-if [ "${nnodes:-1}" -gt 1 ]; then export NCCL_IB_DISABLE=1; fi
+# ALLOW_IB=1 re-ENABLES InfiniBand for a multi-node job, for A/B testing the transport.
+# WHY THIS EXISTS: scale32B_boltz_sinkhorn ran 2 nodes x 8 GPUs for 58,260 steps with ZERO IB
+# errors on 2026-09-16, two days BEFORE NCCL_IB_DISABLE was added here, and it was already
+# stage: 0. So "the cluster's IB is broken" is not established -- it may have been a transient
+# fault on the hosts drawn that day, and HANDOFF 13.9 open decision 2 records the question as
+# raised and never investigated. TCP costs real bandwidth on every inter-node all-reduce, and at
+# stage 0 the FULL gradient crosses nodes every step, so this is worth resolving rather than
+# inheriting. Default stays DISABLED because arms launched without it did sit dead at step 0.
+if [ "${nnodes:-1}" -gt 1 ]; then
+    if [ "${ALLOW_IB:-0}" = "1" ]; then
+        echo "  NCCL: InfiniBand ENABLED (ALLOW_IB=1). If this dies at the first collective with"
+        echo "        ncclRemoteError / IBV_WC_RETRY_EXC_ERR, that is the documented fabric fault."
+        unset NCCL_IB_DISABLE
+    else
+        export NCCL_IB_DISABLE=1
+    fi
+fi
+[ -n "${NCCL_DEBUG_OVERRIDE:-}" ] && export NCCL_DEBUG="${NCCL_DEBUG_OVERRIDE}"
 CFG="${CFG}"
 SP="${SP}"
 if [ -n "\$SP" ] && [ -f "\$SP/latest_checkpointed_iteration.json" ]; then

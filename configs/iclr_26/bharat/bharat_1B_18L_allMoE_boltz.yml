@@ -35,20 +35,20 @@ datasets:
   data_sampling_ratio: 1
   class_args:
     eval_steps: 2
-    data_cache_path: /proj/dmfexp/nima/.cache/megatron_cmix
+    data_cache_path: /proj/dmfexp/datasets-shared/.cache_megatron_cmix_FULL
     data_path:
     - 0.35
-    - /proj/datasets/granite-4-datasets-megatron-merged/web-nemotron-cc-hq-p2_0
+    - /proj/dmfexp/datasets-shared/granite-4-cmix-FULL/web-nemotron-cc-hq-p2_0
     - 0.35
-    - /proj/datasets/granite-4-datasets-megatron-merged/web-nemotron-cc-hq-p2_1
+    - /proj/dmfexp/datasets-shared/granite-4-cmix-FULL/web-nemotron-cc-hq-p2_1
     - 0.15
-    - /proj/datasets/granite-4-datasets-megatron-merged/megamath-web-pro_0
+    - /proj/dmfexp/datasets-shared/granite-4-cmix-FULL/megamath-web-pro_0
     - 0.15
-    - /proj/datasets/granite-4-datasets-megatron-merged/finemath-3plus-rewritten_0
+    - /proj/dmfexp/datasets-shared/granite-4-cmix-FULL/finemath-3plus-rewritten_0
     split: 99,0.5,0.5
     sequence_length: 4096
 tokenizer_args:
-  tokenizer_name: /proj/datasets/tokenizers/granite-4.0-tiktoken
+  tokenizer_name: /proj/dmfexp/datasets-shared/granite-4-cmix-FULL/tokenizers/granite-4.0-tiktoken
 model_args:
   model_class: AutoModelForCausalLM
   pretrained_config:
@@ -188,7 +188,7 @@ model_args:
       n_experts: 32
       top_k: 8
       hopfield_grad_scale: sqrt_consistent
-      routing_norm: zscore
+      routing_norm: none
       temperature: 1.0
       repulsion_form: abs
       repulsion_coef: 0.1
@@ -222,7 +222,7 @@ model_args:
       n_experts: 32
       top_k: 8
       hopfield_grad_scale: sqrt_consistent
-      routing_norm: zscore
+      routing_norm: none
       temperature: 1.0
       repulsion_form: abs
       repulsion_coef: 0.1
@@ -256,7 +256,7 @@ model_args:
       n_experts: 32
       top_k: 8
       hopfield_grad_scale: sqrt_consistent
-      routing_norm: zscore
+      routing_norm: none
       temperature: 1.0
       repulsion_form: abs
       repulsion_coef: 0.1
@@ -290,7 +290,7 @@ model_args:
       n_experts: 32
       top_k: 8
       hopfield_grad_scale: sqrt_consistent
-      routing_norm: zscore
+      routing_norm: none
       temperature: 1.0
       repulsion_form: abs
       repulsion_coef: 0.1
@@ -324,7 +324,7 @@ model_args:
       n_experts: 32
       top_k: 8
       hopfield_grad_scale: sqrt_consistent
-      routing_norm: zscore
+      routing_norm: none
       temperature: 1.0
       repulsion_form: abs
       repulsion_coef: 0.1
@@ -358,7 +358,7 @@ model_args:
       n_experts: 32
       top_k: 8
       hopfield_grad_scale: sqrt_consistent
-      routing_norm: zscore
+      routing_norm: none
       temperature: 1.0
       repulsion_form: abs
       repulsion_coef: 0.1
@@ -392,7 +392,7 @@ model_args:
       n_experts: 32
       top_k: 8
       hopfield_grad_scale: sqrt_consistent
-      routing_norm: zscore
+      routing_norm: none
       temperature: 1.0
       repulsion_form: abs
       repulsion_coef: 0.1
@@ -426,7 +426,7 @@ model_args:
       n_experts: 32
       top_k: 8
       hopfield_grad_scale: sqrt_consistent
-      routing_norm: zscore
+      routing_norm: none
       temperature: 1.0
       repulsion_form: abs
       repulsion_coef: 0.1
@@ -460,7 +460,7 @@ model_args:
       n_experts: 32
       top_k: 8
       hopfield_grad_scale: sqrt_consistent
-      routing_norm: zscore
+      routing_norm: none
       temperature: 1.0
       repulsion_form: abs
       repulsion_coef: 0.1
@@ -494,7 +494,7 @@ model_args:
       n_experts: 32
       top_k: 8
       hopfield_grad_scale: sqrt_consistent
-      routing_norm: zscore
+      routing_norm: none
       temperature: 1.0
       repulsion_form: abs
       repulsion_coef: 0.1
@@ -528,7 +528,7 @@ model_args:
       n_experts: 32
       top_k: 8
       hopfield_grad_scale: sqrt_consistent
-      routing_norm: zscore
+      routing_norm: none
       temperature: 1.0
       repulsion_form: abs
       repulsion_coef: 0.1
@@ -562,7 +562,7 @@ model_args:
       n_experts: 32
       top_k: 8
       hopfield_grad_scale: sqrt_consistent
-      routing_norm: zscore
+      routing_norm: none
       temperature: 1.0
       repulsion_form: abs
       repulsion_coef: 0.1
@@ -596,7 +596,7 @@ model_args:
       n_experts: 32
       top_k: 8
       hopfield_grad_scale: sqrt_consistent
-      routing_norm: zscore
+      routing_norm: none
       temperature: 1.0
       repulsion_form: abs
       repulsion_coef: 0.1
@@ -630,7 +630,7 @@ model_args:
       n_experts: 32
       top_k: 8
       hopfield_grad_scale: sqrt_consistent
-      routing_norm: zscore
+      routing_norm: none
       temperature: 1.0
       repulsion_form: abs
       repulsion_coef: 0.1
@@ -664,7 +664,7 @@ model_args:
       n_experts: 32
       top_k: 8
       hopfield_grad_scale: sqrt_consistent
-      routing_norm: zscore
+      routing_norm: none
       temperature: 1.0
       repulsion_form: abs
       repulsion_coef: 0.1
@@ -698,7 +698,7 @@ model_args:
       n_experts: 32
       top_k: 8
       hopfield_grad_scale: sqrt_consistent
-      routing_norm: zscore
+      routing_norm: none
       temperature: 1.0
       repulsion_form: abs
       repulsion_coef: 0.1
@@ -732,7 +732,7 @@ model_args:
       n_experts: 32
       top_k: 8
       hopfield_grad_scale: sqrt_consistent
-      routing_norm: zscore
+      routing_norm: none
       temperature: 1.0
       repulsion_form: abs
       repulsion_coef: 0.1
@@ -766,7 +766,7 @@ model_args:
       n_experts: 32
       top_k: 8
       hopfield_grad_scale: sqrt_consistent
-      routing_norm: zscore
+      routing_norm: none
       temperature: 1.0
       repulsion_form: abs
       repulsion_coef: 0.1
