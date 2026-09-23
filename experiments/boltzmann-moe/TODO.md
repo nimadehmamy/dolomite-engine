@@ -1009,3 +1009,20 @@ dispatch + Sinkhorn are paid per application and are independent of `I_e`.
 - [ ] Wave C (milestones) — DEFERRED until every final is redone
 - [ ] Re-run the knob sweep conclusions against the **control**, not the old baseline (§19.5 must
       not be quoted until then)
+
+## Table 1: replace the pure-recurrent row with abl_W if abl_W is better (2026-09-23, user)
+
+- [ ] **When `abl_W_pure5x7_deep_isocompute` finishes (~50% at 07:4xZ, ~4 h), evaluate it on BOTH
+      paths and, if it beats `cmix_134M_pure_32B_sparse`, make it Table 1's pure-energy row.**
+      Rationale: the current row is **not iso-compute**. `1x12E` carries **FLOPwt 185.1M** against the
+      hybrid's **141.7M** — it spends **31% MORE compute per token** and still places last, so the row
+      as it stands is an unfair comparison that flatters the hybrid. `abl_W` is matched to the hybrid
+      on the two compute axes (ACTIVE +3%, FLOPwt +4%, `apps/blocks = 1.400` exactly), which is what
+      "pure energy at the same cost" should mean.
+      **State the axis it does NOT match:** `abl_W` is TOTAL 248M vs 134M (+85%), because a sparse
+      stack cannot match total, active and FLOPs at once (HANDOFF 23.11). So it replaces the row as an
+      iso-COMPUTE comparison, not an iso-total one, and the caption must say which.
+      Keep `1x12E` in Table 6 either way — its collapse under sparse routing (34.04, ppl 446.72) is a
+      finding in its own right (HANDOFF 21.9, ~43% of it an unpersisted mu).
+- [ ] If `abl_W` is WORSE, leave the row alone and say so explicitly — that a fairly-provisioned pure
+      energy stack still loses is a stronger negative result than the over-provisioned arm losing.
