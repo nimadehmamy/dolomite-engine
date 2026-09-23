@@ -104,3 +104,45 @@ grep -hE "IBV_WC_RETRY_EXC_ERR|ncclRemoteError" <job>.stderr <job>.stdout \
 
 Or just run `bash experiments/boltzmann-moe/scripts/ib_probe_report.sh <jobid>:<name>`, which encodes
 this plus the dense/sparse split.
+
+---
+
+# RUN ORDER, with measured time estimates (2026-09-23)
+
+Table 1 was regrouped by recurrence on 2026-09-23. Three of the four groups already have a
+FLOP-matched Switch baseline, already evaluated, so **only one baseline was actually missing**.
+
+Estimates are `61035 steps x measured s/step` at **8 GPUs**, taken from real logs (median over all
+post-warmup steps, n in brackets) rather than modelled. Add wall-clock for preemption: the watchdog
+resubmits and resumes from the last checkpoint, so a preemption costs only the steps since the last
+save, but it does stretch the calendar time.
+
+| # | config | why | s/step (basis) | est. 8-GPU time |
+|---|---|---|---|---|
+| **1** | `bsaha_1B_8G4S_switch_baseline.yml` | **NEW. The only missing baseline.** The 1B row stands alone with nothing to compare against. Matched to `cmix1B_12L_gptDense_32B` on ACTIVE and FLOPwt to 0.00% (279.31 vs 279.32) | ~1.78 (from `cmix1B` 1.699 measured, n=99, x1.05 for the Switch/energy ratio seen at 400M: 1.470 vs 1.395) | **~30 h** |
+| **2** | `bsaha_400M_sandwich_isoall.yml` | De-confounds the 400M sandwich row. The current row is ACTIVE -29% / FLOPwt -27% vs the hybrid, so it mixes architecture with a 28% compute deficit | 3.0-3.4 (same energy block as `abl_X` applied 6x; `abl_X` measures 3.423, n=1386, and this has 8 apps not 12) | **51-58 h** |
+| **3** | `bsaha_400M_hybrid_6G1x6E_rnormnone_s7.yml` | Seed replicate. Every 400M row is single-seed and the 134M deployed-path seed spread is **0.87pp**, so any 400M claim under ~0.9pp is inside noise | 3.423 (measured on `abl_X`, n=1386 -- byte-identical except the seed) | **~58 h** |
+
+**Scheduling reality, stated plainly.** Only #1 finishes comfortably. #2 and #3 at ~58 h from a
+2026-09-23 21:00 UTC start land around 2026-09-26 07:00 with roughly 10 h of margin against a
+2026-09-26 17:00 deadline -- and that assumes no preemption. If only one 400M run can be done, **#2
+beats #3**: a confounded row is a reviewer's opening, whereas a missing error bar is a stated
+limitation.
+
+**All three are 8 GPUs exactly.** `tokens/step = GPUS x mbs x ga x seq` and GPUS is not in the file,
+so 4 GPUs silently halves the budget and makes the run incomparable.
+
+## Other measured s/step at 8 GPUs, for reference
+
+| arm | FLOPwt | apps | mbs/ga | s/step (n) |
+|---|---|---|---|---|
+| `abl_X_400M_hyb_rnorm_none` | 299.38 | 12 | 4/4 | 3.423 (1386) |
+| `abl_B_400M_6G1x6S` (Switch, FLOP-matched) | 300.95 | 12 | 4/4 | 2.451 (2247) |
+| `abl_Y_400M_sandwich` (off-budget) | 217.20 | 6 | 4/4 | 1.526 (2348) |
+| `abl_H_400M_6G6S_deep` (Switch, deep) | 239.50 | 12 | 2/8 | 1.470 (4579) |
+| `abl_AB_400M_6G6E_deep_rnormnone` | 238.02 | 12 | 2/8 | 1.395 (463) |
+| `cmix1B_12L_gptDense_32B` | 279.32 | 12 | 2/8 | 1.699 (99) |
+
+Note FLOPwt alone does not predict s/step: `abl_B_400M_6G1x6S` and `abl_X` are within 0.5% on FLOPwt
+yet differ 1.40x in wall-clock, because the energy path carries the proxy router, Sinkhorn and
+repulsion on top of the same nominal FLOPs.
