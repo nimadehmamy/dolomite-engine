@@ -1127,7 +1127,14 @@ class BoltzmannMoEFFEnergy(FFEnergyBase):
                 self.proxy_quad = self.proxy_lin = None
             # PERSISTED so a resume cannot re-run the SVD refit and overwrite a distilled
             # proxy. Plain `_svd_done` resets in every new process (2026-09-22 audit).
-            self.register_buffer("_svd_done_buf", torch.zeros((), dtype=torch.long), persistent=True)
+            # persistent=False -- 2026-09-23. As a PERSISTENT buffer this key broke BOTH checkpoint
+            # paths for every arm whose checkpoint predates it: `unshard.py` (strict load_state_dict)
+            # and, far worse, distributed-checkpoint RESUME, where
+            #     RuntimeError: Missing key in checkpoint state_dict: ...ffwd.moe._svd_done_buf
+            # crash-looped abl_S for 38 watchdog resubmissions over 2.5 h. Bug A (the SVD refit
+            # re-running on resume) is now fixed by the resume gate in set_training_step instead of
+            # by storing a flag, so nothing needs to enter the checkpoint at all.
+            self.register_buffer("_svd_done_buf", torch.zeros((), dtype=torch.long), persistent=False)
             # BACK-COMPAT (2026-09-23). Making this buffer persistent is what lets the SVD refit
             # survive a requeue, but it also adds a key that NO checkpoint written before
             # 2026-09-22 contains -- and `lm_engine/unshard.py` loads strictly, so every such
@@ -1277,6 +1284,18 @@ class BoltzmannMoEFFEnergy(FFEnergyBase):
         (sparse from the start) or when sparse_forward is False (dense throughout).
         """
         if self.sparse_forward and self.sparse_start_step > 0:
+            # BUG A FIX, storage-free (2026-09-23). `_sparse_active` is False in a fresh process, so
+            # on a RESUME past sparse_start_step the first call flips it False->True and used to
+            # re-run the SVD refit -- discarding a proxy that had been training since the real
+            # transition. The distinguishing fact needs no checkpoint key: on a genuine transition
+            # the first step we ever see is BELOW sparse_start_step, whereas on a resume past it the
+            # very first step is already at or beyond. So record whether we have seen any step yet
+            # and suppress the refit when the process starts life already past the gate.
+            first_call = not getattr(self, "_seen_any_step", False)
+            self._seen_any_step = True
+            if first_call and int(step) >= self.sparse_start_step:
+                self._svd_done = True
+                self._svd_done_buf.fill_(1)
             was = self._sparse_active
             self._sparse_active = int(step) >= self.sparse_start_step
             # refit the proxy from the SVD of W at the moment the gate opens, before the sparse

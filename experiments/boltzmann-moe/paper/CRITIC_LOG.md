@@ -399,3 +399,42 @@ Bug A fix) and not `strict=False` (that would hide genuine missing weights).
 
 **Rule for this codebase:** any new persistent buffer needs a back-compat load hook in the same
 commit, because checkpoints here outlive the code by weeks and the loader is strict.
+
+## 2026-09-23 (h) — the same persistent-buffer bug, third failure mode, against an in-file warning
+
+`_svd_done_buf` (my Bug A fix) as a PERSISTENT buffer has now broken three things:
+
+1. `unshard.py` strict `load_state_dict` — caught on `abl_C`, patched with a load pre-hook (entry g).
+2. **Distributed-checkpoint RESUME** — `RuntimeError: Missing key in checkpoint state_dict:
+   ...ffwd.moe._svd_done_buf`. This crash-looped `abl_S` through **38 watchdog resubmissions over
+   2.5 hours**, from 01:15Z to 03:42Z. The pre-hook from (g) does not help here: DCP validates keys
+   against the checkpoint, it does not go through `_load_from_state_dict`.
+3. Reporting: my monitor read `abl_S`'s step from a stale log and showed it as PEND/19%, so I told
+   the user it was healthy in several consecutive status updates while it was dead.
+
+**The file already warned me.** Two comments in the same class, a few hundred lines above my edit:
+
+> `persistent=False: a persistent buffer adds a state_dict key and breaks resume for every existing
+> energy-MoE checkpoint`
+
+> `REGISTER ONLY WHEN BALANCING IS ON. A persistent buffer adds a key to the state_dict, and
+> registering it unconditionally broke resume for EVERY existing ...`
+
+Someone had already paid for this lesson and documented it at the point of use. I read that region
+while editing and did not connect it.
+
+**Fix:** `persistent=False`, so the flag never enters a checkpoint. This is safe in BOTH directions
+because DCP resolves keys from the MODEL's state_dict — a key missing from the checkpoint is a hard
+error, an extra key in the checkpoint is simply never requested, so the four arms whose checkpoints
+already contain it load fine too. Bug A is now fixed WITHOUT storage: on a genuine dense->sparse
+transition the first step the process ever sees is below `sparse_start_step`, whereas on a resume past
+the gate the first step is already beyond it, so a `_seen_any_step` check distinguishes them.
+
+**Rules earned:**
+* **Never add a persistent buffer to a class whose checkpoints are already in flight.** Three loaders
+  (strict, DCP, HF) validate keys differently; a back-compat hook for one does not cover the others.
+* **A monitor must verify PROGRESS, not presence.** Reading a step number from `ls -t`-newest logs
+  reports the last successful run of a crash-looping arm. Compare the step against
+  `latest_checkpointed_iteration.json` and require it to ADVANCE between reports.
+* Prefer deriving state from observable conditions over storing it. The storage-free resume gate is
+  both simpler and immune to every one of these three failure modes.
