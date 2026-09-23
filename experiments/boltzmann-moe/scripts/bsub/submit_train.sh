@@ -155,34 +155,47 @@ export NCCL_DEBUG=WARN
 # SET FROM $nnodes, NOT BY HAND: this was added temporarily, reverted, and then three multi-node
 # arms were launched without it and sat dead at step 0. Encoding it removes that failure mode.
 # Single node needs no inter-node transport, so leaving it off there costs nothing.
-# ALLOW_IB=1 re-ENABLES InfiniBand for a multi-node job, for A/B testing the transport.
-# WHY THIS EXISTS: scale32B_boltz_sinkhorn ran 2 nodes x 8 GPUs for 58,260 steps with ZERO IB
-# errors on 2026-09-16, two days BEFORE NCCL_IB_DISABLE was added here, and it was already
-# stage: 0. So "the cluster's IB is broken" is not established -- it may have been a transient
-# fault on the hosts drawn that day, and HANDOFF 13.9 open decision 2 records the question as
-# raised and never investigated. TCP costs real bandwidth on every inter-node all-reduce, and at
-# stage 0 the FULL gradient crosses nodes every step, so this is worth resolving rather than
-# inheriting. Default stays DISABLED because arms launched without it did sit dead at step 0.
+# NATIVE INFINIBAND IS THE DEFAULT FOR MULTI-NODE as of 2026-09-23. It is worth 1.40x in the dense
+# phase and 1.62x in the SPARSE phase, measured placement-controlled: both transports on the SAME
+# host pair p6-r07-n4:p6-r09-n4, same config, 400 steps, zero genuine NCCL errors either side.
+#     regime            TCP              native IB        speedup
+#     dense             1.2861 s/step    0.9160 s/step    1.40x
+#     sparse (300+)     1.1448 s/step    0.7069 s/step    1.62x
+# Quote the SPARSE row: sparse_start_step is 300 of 61035-122070 steps, so production is sparse for
+# >99% of a run. The absolute saving is ~0.4 s/step in BOTH regimes, which is the expected signature
+# (gradient all-reduce volume is independent of sparsity at stage 0, so a constant comms saving is a
+# larger share of a shorter step). RDMA removes ~62% of the inter-node overhead.
+#
+# WHY THIS WAS OFF UNTIL NOW, and why the old reason did not hold: NCCL_IB_DISABLE=1 was added
+# 2026-09-18 because 2 of 4 launches died at the first collective with IBV_WC_RETRY_EXC_ERR. But
+# scale32B_boltz_sinkhorn had run 2 nodes x 8 GPUs for 58,260 clean steps on 2026-09-16, already at
+# stage 0, and the justification conflated that LOUD ncclRemoteError with a SILENT stall at step 0,
+# which is a different bug (the weight-space repulsion wedge). Three IB arms ran clean on 2026-09-23
+# with zero genuine errors, INCLUDING one with all ten rails unrestricted, so the original fault
+# looks transient or specific to the hosts drawn that day, not a broken fabric.
+#
+# FALLBACK: FORCE_TCP=1 puts a job back on TCP over IPoIB/bond1. Use it if a job dies at the FIRST
+# collective with ncclRemoteError / IBV_WC_RETRY_EXC_ERR on repeated resubmits. A single such failure
+# is worth one resubmit first (the watchdog resubmits anyway); only make it persistent if it recurs.
+# ALLOW_IB=0 is accepted as a synonym. NOTE: a SILENT stall at step 0 with ZERO NCCL errors is NOT
+# this -- that is the weight-space repulsion wedge, and FORCE_TCP will not fix it.
 if [ "${nnodes:-1}" -gt 1 ]; then
-    if [ "${ALLOW_IB:-0}" = "1" ]; then
-        echo "  NCCL: InfiniBand ENABLED (ALLOW_IB=1). If this dies at the first collective with"
-        echo "        ncclRemoteError / IBV_WC_RETRY_EXC_ERR, that is the documented fabric fault."
+    if [ "${FORCE_TCP:-0}" = "1" ] || [ "${ALLOW_IB:-1}" = "0" ]; then
+        echo "  NCCL: TCP fallback requested (FORCE_TCP/ALLOW_IB=0). Expect ~1.4-1.6x slower than IB."
+        export NCCL_IB_DISABLE=1
+    else
         unset NCCL_IB_DISABLE
-        # PICK ONLY THE COMPUTE RAILS. This host class exposes 10 HCAs on TWO DIFFERENT IB SUBNETS:
-        # eight report "SM lid: 1923" and mlx5_1 / mlx5_6 report "SM lid: 1", and the PCIe topology
-        # pairs each storage rail PIX with a compute rail. All ten are Active/LinkUp at 400 Gb/s, so
-        # the fabric is NOT down. But if NCCL enumerates all ten and pairs a rail on one subnet with
-        # a peer's rail on the other, the remote QP never answers and you get exactly the reported
-        # IBV_WC_RETRY_EXC_ERR(12) -> ncclRemoteError "across 6+ HCAs, 7+ peers". That is a multi-rail
-        # SELECTION bug, not a broken fabric, and disabling IB outright was treating the symptom.
-        # Chosen at RUNTIME per node by majority SM lid, so it survives different HCA naming/counts.
+        echo "  NCCL: native InfiniBand (default for multi-node). FORCE_TCP=1 to fall back."
+        # Restrict to the COMPUTE rails. This host class exposes 10 HCAs on TWO IB subnets: eight
+        # report "SM lid: 1923" and have IPoIB interfaces, while mlx5_1 / mlx5_6 report "SM lid: 1"
+        # and have none (storage/management). All ten are Active/LinkUp at 400 Gb/s. Restricting is
+        # hygiene, NOT the thing that makes IB work -- an unrestricted all-ten-rail arm ran clean too.
+        # Chosen at RUNTIME per node by majority SM lid, so it survives other HCA namings and counts.
         if command -v ibstat >/dev/null 2>&1; then
             _maj=\$(for d in \$(ibstat -l 2>/dev/null); do ibstat \$d 2>/dev/null | grep -m1 'SM lid:' | awk '{print \$3}'; done | sort | uniq -c | sort -rn | head -1 | awk '{print \$2}')
             _hcas=\$(for d in \$(ibstat -l 2>/dev/null); do _s=\$(ibstat \$d 2>/dev/null | grep -m1 'SM lid:' | awk '{print \$3}'); [ "\$_s" = "\$_maj" ] && printf '%s,' \$d; done | sed 's/,\$//')
-            if [ -n "\$_hcas" ]; then export NCCL_IB_HCA="\$_hcas"; echo "  NCCL_IB_HCA=\$NCCL_IB_HCA (majority IB subnet SM lid \$_maj)"; fi
+            if [ -n "\$_hcas" ]; then export NCCL_IB_HCA="\$_hcas"; echo "  NCCL_IB_HCA=\$NCCL_IB_HCA (majority IB subnet, SM lid \$_maj)"; fi
         fi
-    else
-        export NCCL_IB_DISABLE=1
     fi
 fi
 [ -n "${NCCL_DEBUG_OVERRIDE:-}" ] && export NCCL_DEBUG="${NCCL_DEBUG_OVERRIDE}"

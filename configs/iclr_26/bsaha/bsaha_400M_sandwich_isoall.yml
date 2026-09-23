@@ -1,3 +1,33 @@
+# ==============================================================================================
+# MULTI-NODE TRANSPORT (added 2026-09-23) -- NATIVE INFINIBAND IS THE DEFAULT, AND HOW TO FALL BACK
+#
+# If you launch this on MORE THAN ONE NODE, scripts/bsub/submit_train.sh now enables native
+# InfiniBand automatically. You do not need to pass anything. Measured, placement-controlled (both
+# transports on the SAME host pair, same config, 400 steps, zero genuine NCCL errors either side):
+#     regime            TCP              native IB        speedup
+#     dense             1.2861 s/step    0.9160 s/step    1.40x
+#     sparse (300+)     1.1448 s/step    0.7069 s/step    1.62x
+# The SPARSE row is the one that matters: sparse_start_step is 300 out of tens of thousands of steps,
+# so a real run is sparse for >99% of its life.
+#
+# FALLBACK TO TCP IF YOU HIT TRANSPORT ERRORS:
+#     FORCE_TCP=1 bash experiments/boltzmann-moe/scripts/bsub/submit_train.sh <name> <cfg> <gpus> ...
+# (ALLOW_IB=0 is a synonym.) Expect TCP to be ~1.4-1.6x slower.
+#
+# WHEN to use it. ~50% of multi-node launches have historically died AT STARTUP with a LOUD
+# ncclRemoteError / IBV_WC_RETRY_EXC_ERR on the first collective, then run fine on the next attempt.
+# So RESUBMIT ONCE before reaching for FORCE_TCP; the watchdog resubmits by itself anyway. Only make
+# TCP persistent if the same job keeps failing that way.
+#
+# WHEN NOT to use it. A SILENT stall at step 0 with ZERO NCCL errors is a DIFFERENT bug -- the
+# weight-space repulsion wedge -- and TCP will not fix it. Keep repulsion_space: output (never
+# weight) on anything multi-node. Also beware: our own scripts' COMMENTS contain the strings
+# "ncclRemoteError" and "IBV_WC_RETRY_EXC_ERR" and the generated job script is echoed into the log,
+# so a bare grep reports phantom errors. Require a real NCCL line:
+#     grep -hE 'IBV_WC_RETRY_EXC_ERR|ncclRemoteError' <log>.stderr <log>.stdout \
+#       | grep -E '[a-z0-9-]+:[0-9]+:[0-9]+|NCCL WARN'
+# NCCL writes its banner and errors to STDOUT; the step lines go to STDERR. Check both.
+# ==============================================================================================
 # abl_AD -- 400M TRUE SANDWICH MATCHED ON ALL THREE PARAMETER AXES.  The 400M analogue of abl_AA.
 #
 # READY TO RUN, NOT YET LAUNCHED -- offered for a colleague to pick up.  Launch with:

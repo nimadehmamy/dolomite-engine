@@ -208,3 +208,49 @@ one short probe before committing a multi-day launch.
 
 **On the `Tokens per epoch:` check** — the trainer prints it per shard at startup. The two web shards
 must read ~265–266e9. ~50e9 means you are back on the biased subset.
+
+---
+
+## Multi-node transport: native InfiniBand is the DEFAULT (2026-09-23)
+
+`submit_train.sh` enables native IB automatically whenever `nnodes > 1`. **You do not need to pass
+anything.** Measured placement-controlled, both transports on the same host pair, same config, 400
+steps, zero genuine NCCL errors either side:
+
+| regime | TCP | native IB | speedup |
+|---|---|---|---|
+| dense | 1.2861 s/step | 0.9160 s/step | 1.40x |
+| **sparse (step 300+)** | 1.1448 s/step | 0.7069 s/step | **1.62x** |
+
+Quote the sparse row: `sparse_start_step` is 300 out of tens of thousands of steps, so a real run is
+sparse for >99% of its life.
+
+### Falling back to TCP
+
+```bash
+FORCE_TCP=1 bash experiments/boltzmann-moe/scripts/bsub/submit_train.sh <name> <cfg> <gpus> ...
+```
+
+(`ALLOW_IB=0` is a synonym.) Expect ~1.4-1.6x slower.
+
+**Use it when** a job dies at the FIRST collective with a loud `ncclRemoteError` /
+`IBV_WC_RETRY_EXC_ERR` **on repeated resubmits**. Historically ~50% of multi-node launches died that
+way at startup and then ran fine next attempt, so **resubmit once first** — the watchdog resubmits by
+itself anyway. Only make TCP persistent if the same job keeps failing.
+
+**Do NOT use it** for a *silent* stall at step 0 with zero NCCL errors. That is a different bug, the
+weight-space repulsion wedge, and TCP will not fix it. Keep `repulsion_space: output` (never `weight`)
+on anything multi-node.
+
+**Checking for a real error is not a plain grep.** Our own scripts’ comments contain the strings
+`ncclRemoteError` and `IBV_WC_RETRY_EXC_ERR`, and the generated job script is echoed into the log, so
+a bare grep reports phantom failures — this misled me twice. Require a genuine NCCL line, and check
+**both** streams, since NCCL writes its banner and errors to stdout while step lines go to stderr:
+
+```bash
+grep -hE "IBV_WC_RETRY_EXC_ERR|ncclRemoteError" <job>.stderr <job>.stdout \
+  | grep -E "[a-z0-9-]+:[0-9]+:[0-9]+|NCCL WARN"
+```
+
+Or just run `bash experiments/boltzmann-moe/scripts/ib_probe_report.sh <jobid>:<name>`, which encodes
+this plus the dense/sparse split.
