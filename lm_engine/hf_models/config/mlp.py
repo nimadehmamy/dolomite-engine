@@ -257,7 +257,7 @@ class _EnergyFFHopfieldArgs(BaseArgs):
     def model_post_init(self, __context: Any) -> None:
         assert self.mlp_type == "EnergyFF_Hopfield"
         assert self.gelu_grad_method in ("sigmoid", "tanh_exact", "erf_exact")
-        assert self.hopfield_grad_scale in ("mean", "inv_sqrt", "sqrt_consistent")
+        assert self.hopfield_grad_scale in ("mean", "inv_sqrt", "sqrt_consistent", "exact")
 
 
 class _EnergyFFBoltzmannMoEArgs(BaseArgs):
@@ -493,7 +493,7 @@ class _EnergyFFBoltzmannMoEArgs(BaseArgs):
         assert self.temperature > 0
         assert self.repulsion_form in ("squared", "abs", "hinge", "signed")
         assert self.routing_norm in ("none", "zscore", "sqrt_width")
-        assert self.hopfield_grad_scale in ("mean", "inv_sqrt", "sqrt_consistent")
+        assert self.hopfield_grad_scale in ("mean", "inv_sqrt", "sqrt_consistent", "exact")
         assert self.gelu_grad_method in ("sigmoid", "tanh_exact", "erf_exact")
         assert self.proxy_mu_convention in ("legacy", "pre_mu")
 
@@ -555,7 +555,7 @@ class _EnergyFFSurrogateBoltzmannMoEArgs(_EnergyFFBoltzmannMoEArgs):
         assert self.temperature > 0
         assert self.repulsion_form in ("squared", "abs", "hinge", "signed")
         assert self.routing_norm in ("none", "zscore", "sqrt_width")
-        assert self.hopfield_grad_scale in ("mean", "inv_sqrt", "sqrt_consistent")
+        assert self.hopfield_grad_scale in ("mean", "inv_sqrt", "sqrt_consistent", "exact")
         assert self.gelu_grad_method in ("sigmoid", "tanh_exact", "erf_exact")
         assert self.proxy_mu_convention in ("legacy", "pre_mu")
         # the head's own

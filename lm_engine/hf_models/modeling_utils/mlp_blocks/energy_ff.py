@@ -1134,7 +1134,7 @@ class BoltzmannMoEFFEnergy(FFEnergyBase):
             # crash-looped abl_S for 38 watchdog resubmissions over 2.5 h. Bug A (the SVD refit
             # re-running on resume) is now fixed by the resume gate in set_training_step instead of
             # by storing a flag, so nothing needs to enter the checkpoint at all.
-            self.register_buffer("_svd_done_buf", torch.zeros((), dtype=torch.long), persistent=False)
+            self.register_buffer("_svd_done_buf", torch.zeros((), dtype=torch.long), persistent=True)
             # BACK-COMPAT (2026-09-23). Making this buffer persistent is what lets the SVD refit
             # survive a requeue, but it also adds a key that NO checkpoint written before
             # 2026-09-22 contains -- and `lm_engine/unshard.py` loads strictly, so every such

@@ -438,3 +438,157 @@ the gate the first step is already beyond it, so a `_seen_any_step` check distin
   `latest_checkpointed_iteration.json` and require it to ADVANCE between reports.
 * Prefer deriving state from observable conditions over storing it. The storage-free resume gate is
   both simpler and immune to every one of these three failure modes.
+
+---
+
+## 2026-09-23 — session 2: STAT-MECH AUDIT of `sec/theory.tex` + `sec/intro.tex` after ad60056
+
+Scope: physics/statistics correctness and internal consistency only. Prior-art and empirics
+findings from session 1 are NOT re-litigated. Two tasks from the author: (A) verify his sign
+unification (`E_x` energy, `a_x` overlap, `E_x = -a_x`, every weight `e^{-beta E}`, every router
+`softmax(+beta a)`, `S_x`/`s_k` eliminated); (B) confirm or refute a suspected maxent -> mixture
+non-sequitur in §theory-experts.
+
+### (A) THE SIGN UNIFICATION IS SUBSTANTIALLY CORRECT. Verified line by line against the code.
+Clean and matching `energy_ff.py` / `build_boltzmann_moe` / `layer.py`:
+- `eq:free-energy-grad` (theory.tex:41-47): `grad F = sum_s p_s grad E_s`, `p_s = softmax(-beta E_s)`.
+  Differentiated by hand; exact.
+- `eq:eff` + `eq:moe-density` + the "Sign convention" paragraph (73-104): `E_i=-a_i`,
+  `e^{-beta E_i}=e^{+beta a_i}`, and `p(g) ~ e^{-beta E^FF} = Z^FF` (which is right because
+  `E^FF = -beta^-1 log Z^FF`). All three mutually consistent.
+- theory.tex:101-104 ("taking the lower-bounded `E_i=+||phi(Wg)||^2` would invert the router") is
+  EXACTLY what the code does: `HopfieldFFEnergy.energy_per_token` returns `+||gelu(Wh)||^2/I_e`
+  = the OVERLAP, and the kind default `e_sign="neg"` then softmaxes `-a`. Correct.
+- app:routing:364-381 incl. the footnote "the kind-based defaults are inverted for BOTH kinds":
+  VERIFIED in `build_boltzmann_moe` — w1w2 default `e_sign="pos"` on a stored `-a`, hopfield
+  default `"neg"` on a stored `+a`; both give logit `-a`. The footnote is right.
+- §theory-mu: Lagrangian, `dL/dp_i`, the KKT step, "non-negativity inactive because
+  dH/dp_i -> +inf", and BOTH optimal-value claims re-derived symbolically:
+  `max_p [<p,a> + beta^-1 H] = beta^-1 log Z = -E^FF` and
+  `min_p [<p,E> - beta^-1 H] = E^FF = F`. All correct. This is the Gibbs variational principle.
+- `eq:mu-softmax`: writing the batch Lagrangian with `nu_i` on eq:capacity and `mu_i = nu_i/N`
+  gives `p_ni = softmax_i(beta(a_ni - mu_i))` exactly. Matches `_route`: `logits = logits - mu`,
+  and the Sinkhorn update `mu <- mu + log(K load)` raises mu for an overloaded expert. Correct.
+- OT reading: `P_ni = p_i(g_n)/N` has row sums `1/N`, column sums `1/K`. Correct.
+- The intro's Fisher-identity paragraph (46-54): `p_i = ptilde(g,i)/ptilde(g) = p(i|g)` exactly,
+  `Zcal_theta` cancels, and `grad_g log ptilde(g) = sum_i p(i|g) grad_g log ptilde(g,i)` IS
+  Fisher's identity in g. Correct and citable.
+- No leftover `s_k` / `S_x` / `\vs` anywhere in `sec/*.tex` or `main.tex`. One dangling `\bar{s}`
+  and `\mathrm{std}(s)` survives at appendix.tex:413.
+- `beta` is NOT learnable: `self.temperature = float(temperature)`, `temperature: 1.0` in every
+  headline config. No tex claims otherwise. Nothing breaks. (And if it were learned,
+  `dF/dbeta = S/beta^2` — verified numerically to 1e-10 — so its gradient is the routing entropy
+  and has fixed sign.)
+
+### ERRORS FOUND (ranked; file:line in the report)
+1. **`psd_anti` ASCENDS the paper's energy in the arms that use it.** `layer.py:881,915`:
+   `grad_E = attn_out + scale_ff*ffwd_out` then `h = h - proj(grad_E)`. But `attn_out` is
+   `+grad LSE = -grad E^AT` (`energy_attention.py:478` "= +grad_LSE"; `energy_per_token` returns
+   `-lse`), and both expert classes' `forward` return `+grad a = -grad E^FF` (which
+   app:expert-forms:294 correctly states). So `grad_E = -grad E`, and `h - Pi(grad_E) = h + Pi grad E`.
+   For a PSD Pi that is `Edot = +||S^T grad E||^2 >= 0`. **The code documents this itself** at
+   `layer.py:905-915`: the `energy_full_per_token_grad` branch exists precisely to "flip sign
+   (E = -LSE -> +grad E = -(+grad LSE_partial)) ... so the update h := h - proj(grad_E) descends E
+   by the standard PSDA descent identity". That flag is `False` by default and ABSENT from
+   `cmix_134M_hybrid_32B_sparse.yml`, `cmix_400M_hybrid_sparse.yml`, `cmix_134M_pure_32B_sparse.yml`
+   — all of which set `energy_proj_type: psd_anti`. So the flip never runs in the headline arms.
+   app:expert-forms:343-344 ("the codebase's psd_anti variant supplies exactly that") is unsafe as
+   written, and session 1's note that psd_anti RESCUES the descent claim for the 32B wave is
+   **RETRACTED**. Weak corroboration: psd_anti was the WORST of the three proj types in the paper's
+   own 2500-step probe (3.6177 vs 3.6081/3.6096, app:expert-forms:350-351).
+2. **`routing_norm: zscore` (every headline arm) means the block is NOT the gradient of the stated
+   free energy, and the gap is proportional to the routing entropy.** Derived and verified to
+   2.5e-16 in float64: with `beta_t(g) = beta/std_k a_k(g)`,
+   `sum_k p_k grad a_k = -grad Ftilde + beta_t^-2 H[p] grad beta_t`.
+   The code returns only the first term. The term vanishes iff `H[p]=0` or `std_k a_k` is locally
+   flat. In a synthetic K=8/d=16 instance it is **46% of the true gradient in norm** (returned
+   vector 0.56x the correct magnitude, cos 0.985). §sec:balance advertises eff-K 15.2-16.0 of 16,
+   i.e. near-maximal entropy — exactly the regime where the dropped term is largest. Not measured
+   on a trained checkpoint yet; `abl_R_134M_hyb_rnorm_none` is the A/B that settles it.
+3. **theory.tex:36-38, the `beta -> 0` limit is wrong.** `F -> Ebar - beta^-1 log M -> -inf`; it
+   does NOT approach the average. Verified numerically. The WEIGHTS and the UPDATE tend to the
+   average; F diverges. Fix by stating `F = U - beta^-1 S` and the bracket
+   `min_s E_s - beta^-1 log M <= F <= min_s E_s`.
+4. **(B) CONFIRMED — the maxent argument does not license the mixture.** theory.tex:64 gives
+   `p ~ exp(sum_s lambda_s E_s)` (exp of a sum, exponential family); theory.tex:73 gives
+   `p ~ sum_i e^{beta a_i}` (sum of exps, a mixture). Maxent over expected features yields the
+   former and never the latter. The author's suspected repair (i) is the right one: maxent on the
+   JOINT over `(g,z)` with indicator-gated features `1[z=i] a_i(g)` plus the bare indicators
+   `1[z=i]` gives an exponential family `ptilde(g,z) ~ e^{-beta(E_z(g)+mu_z)}`, whose MARGINAL over
+   the discrete latent is the mixture. **Bonus that the author should take: the multiplier of the
+   indicator feature IS the chemical potential, `mu_i = -beta^-1 log pi_i` = minus temperature
+   times the log prior over the latent.** So §theory-mu's mu falls out of the SAME maxent problem,
+   and fixing the batch marginal is empirical Bayes on that prior. One repair closes (B), unifies
+   §theory-experts with §theory-mu, and feeds the Fisher/posterior paragraph in the intro.
+5. **theory.tex:179-181 gives the wrong reason for dropping mu's derivative.** "Since mu_i does not
+   depend on g" is FALSE — mu is solved from the batch, hence a function of every g_n. The correct
+   justification is the ENVELOPE THEOREM: `dL/dmu_i = -(N^-1 sum_n p_i(g_n) - 1/K) = 0` at a
+   feasible point, so the total derivative equals the partial at fixed mu. Correction is first
+   order in the constraint violation, i.e. nonzero for a truncated Sinkhorn.
+6. **theory.tex:186 grand-canonical sign.** `e^{-beta(E - mu N)}` at N=1 is `e^{-beta(E_i - mu_i)}`,
+   but the paper writes `e^{-beta(E_i + mu_i)}`. The paper's mu is MINUS the physicist's chemical
+   potential (raising physics-mu raises occupancy; raising the paper's mu lowers it). The code
+   agrees with the paper (`logits - mu`), so keep the sign and say so; do not flip.
+7. **beta inconsistency in the attention energy.** `eq:eat` (theory.tex:251) has prefactor
+   `beta_A^-1` and NO beta in the exponent; theory.tex:258,263 use beta=1 (`e^{-E_B}`,
+   `softmax(-E_B)`); intro.tex:23 has beta in BOTH. Pick beta=1 for attention (the bandwidth
+   `1/sqrt(d_h)` IS the temperature there) and delete `beta_A`.
+8. **`eq:total` (theory.tex:283-284)**: omits the learned `scale_ff` (`layer.py:929` sums
+   `e_attn + scale_ff*e_ffwd`; measured 8.0 in the 134M hybrid, x 66.93 from the grad prefactor),
+   and mixes arguments — `E^AT_A(h)` beside `E^FF(g_A)` in one equation. Also the update sign in
+   intro.tex:21 (`x <- x - Pi grad E`) contradicts app:expert-forms:296 (`h <- h - Pi(ffwd_out)`
+   with `ffwd_out = -grad E`). Exactly one must flip; the code matches the appendix.
+   NB `E^AT + s_ff E^FF = -beta^-1 log[Z^AT (Z^FF)^{s_ff}]` is still a log-partition function, so
+   the learned weight costs the framing nothing once written down.
+9. **theory.tex:240 mislabels the vMF concentration as `kappa = 1/sqrt(d_h)`.** The vMF needs UNIT
+   vectors; the true concentration is `kappa_AB = ||q_A|| ||k_B|| / sqrt(d_h)`, which depends on B
+   and therefore puts `C_{d_h}(kappa_AB)` INSIDE the sum. `1/sqrt(d_h)` is the bandwidth.
+10. theory.tex:64 writes `exp(+sum_s lambda_s E_s)` against the paper's own rule at line 29 that
+    "every exponent below is `-beta (energy)`".
+11. appendix.tex:413 `a_k -> (a_k - \bar{s})/\mathrm{std}(s)`: `s` no longer exists. Should be
+    `\bar{a}` / `\mathrm{std}(a)`.
+12. main.tex:73 `"free energies" (i.e. negative log-likelihood)` — by the paper's own
+    `log p = -beta F`, `F` is TEMPERATURE TIMES the NLL, not the NLL. (The "explicitly parametrized
+    likelihood function for tokens" at main.tex:75 is still the session-1 must-cut.)
+13. intro.tex:14 states the EBM difficulty backwards: `log Zcal_theta` being x-independent and
+    dropping from gradients is why EBMs are EASY to sample/score; it is `grad_theta log Zcal_theta
+    = -E_{P_theta}[grad_theta E]` that makes maximum likelihood hard.
+14. intro.tex:11 footnote overstates: on a CONNECTED support the score determines p exactly. The
+    disconnected-component statement is Song & Ermon's idealisation; the practical claim is
+    exponential mixing time across a barrier.
+15. theory.tex:98-99 "exactly as a bound state's energy does": a bound state's energy IS bounded
+    below. An energy unbounded below has no ground state and no equilibrium ensemble; the sphere
+    is what saves it, which the paper already says. Drop the flourish.
+16. `sec/debug.tex` uses `E = +||phi(Wh)||^2` (the code's hopfield sign) while theory/appendix use
+    `E = -a`. Opposite conventions in one repo; debug.tex is not for submission but it is how the
+    author reasons about the 66.93x.
+
+### STRENGTHENINGS a stat-mech reviewer will want and that cost almost nothing
+- State `F = U - beta^-1 S` once. It fixes error 3, names the Gibbs variational principle at
+  theory.tex:157 (already derived there, unnamed), gives `dF/dbeta = S/beta^2` for free, and makes
+  the LSE bracket obvious.
+- Say Legendre explicitly: `beta^-1 log sum_i e^{beta a_i} = sup_{p in simplex} {<p,a> + beta^-1 H[p]}`,
+  i.e. log-sum-exp and negative entropy are a conjugate pair and `p* = grad_a` of the LSE. And
+  `grad_g F = sum_s p_s grad_g E_s` is the envelope (Danskin) theorem for that sup.
+- Say once that a SUM of free energies over tokens/heads is the free energy of the product
+  ensemble, so `eq:total` is `-beta^-1 log` of a product partition function — valid ONLY at a
+  COMMON beta. Two free energies at different temperatures do not add into a thermodynamic
+  potential. (beta=1 in both here, so the paper is fine; it just has not said so.)
+- Grand-canonical framing is defensible if stated as Legendre: `Omega(mu) = F - sum_i mu_i n_i`,
+  `n_i = -dOmega/dmu_i`, with ensemble equivalence exact as a duality and `O(N^-1/2)` in a finite
+  batch's fluctuations.
+- The per-position `1/|C_A|` in `eq:kde` is constant in g but varies with A, so `E^AT_A` is not
+  comparable ACROSS positions — matters for the energy-vs-correctness probes.
+- Session 1's measured `kappa = 1.1-2.2` against `nu = d_h/2 - 1 = 31` (omitted `log C_{d_h}`
+  moves <0.03 nats) is the quantified defence of the KDE claim and is STILL NOT IN THE PAPER.
+  It converts error 9 from a hole into a strength. Needs one forward pass on real data to close
+  the isotropic-g caveat.
+- `eq:eff`'s boxed expert energy is the `W_1W_2` form; every headline arm uses the Hopfield form.
+  Box both or say which.
+
+### Numbers verified this session (float64 CPU, /tmp/critic2/chk.py, chk2.py)
+- `F = -beta^-1 log sum e^{-beta E}` at beta = 1e-1..1e-4 tracks `Ebar - log M/beta` to 4+ digits
+  and diverges; it does not tend to `Ebar`.
+- `dF/dbeta = S/beta^2` to 1e-10 by autograd.
+- The zscore identity `sum_k p_k grad a_k = -grad Ftilde + beta_t^-2 H[p] grad beta_t` holds to
+  2.47e-16 relative; without the correction the relative error is 0.457.

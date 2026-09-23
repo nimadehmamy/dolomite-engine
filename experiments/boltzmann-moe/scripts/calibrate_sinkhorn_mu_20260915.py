@@ -82,9 +82,15 @@ def main():
     ap.add_argument("--batch_size", type=int, default=2)
     ap.add_argument("--seqlen", type=int, default=4096)
     ap.add_argument("--out_name", default="unsharded_mucal")
+    # 2026-09-22: the source dir was hardcoded to "unsharded", but the 32B cmix arms name theirs
+    # "unsharded_step122070". A symlink named "unsharded" would be the obvious fix and is the WRONG
+    # one: auto_eval_on_finish.sh accepts a bare `unsharded/` as a legacy path, and a stale
+    # `unsharded*` glob once reported a 2.10B checkpoint as a 32B result. Name it explicitly instead.
+    ap.add_argument("--src_name", default="unsharded",
+                    help="checkpoint dir under run_dir to calibrate (e.g. unsharded_step122070)")
     a = ap.parse_args()
 
-    src = Path(a.run_dir) / "unsharded"
+    src = Path(a.run_dir) / a.src_name
     dst = Path(a.run_dir) / a.out_name
     assert src.is_dir(), f"missing {src}"
     if dst.exists(): shutil.rmtree(dst)

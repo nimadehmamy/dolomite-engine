@@ -33,6 +33,12 @@ ROLES = {
  'abl_F_134M_6G_dense_isoactive':      ('134M GPT-only, iso-active','ABLATION F'),
  'abl_I_134M_w1w2_sparse_surr_projUncon': ('134M w1w2, unconstrained proj','ABLATION I'),
  'abl_R_134M_hyb_rnorm_none':           ('134M hybrid, routing\\_norm=none','ABLATION R'),
+    # 2026-09-23: routing_norm=none on the BLOCK-POSITION variant. Its parent scored 43.45 with
+    # zscore, so this arm's +1.49pp is where the knob actually matters -- on the hybrid it was only
+    # +0.10pp. Together they collapse the 1.37pp placement gap to 0.02pp (HANDOFF 24.1).
+    'abl_U_134M_sandwich_rnorm_none':      ('134M block-pos, routing\\_norm=none','ABLATION U'),
+    'abl_V_134M_223_h768_isototal':        ('134M [2,2,3] h768, iso-total','ABLATION V'),
+    'abl_W_pure5x7_deep_isocompute':       ('134M pure deep 5x7, iso-compute','ABLATION W'),
  'abl_G_400M_6G1x6E1x6E':              ('400M two recurrent energy blocks','ABLATION G'),
  'abl_G_400M_6G1x6S1x6S':              ('400M two recurrent Switch blocks','ABLATION G'),
  'abl_H_400M_6G6E_deep':               ('400M deep energy, no recurrence','ABLATION H'),

@@ -347,7 +347,24 @@ def load_checkpoint_for_training(
         else:
             saver = _ModelSaver(model_container)
             state_dict = {"state": saver.state_dict()}
-            dcp.load(state_dict, checkpoint_id=_get_model_path(load_path))
+            # allow_partial_load 2026-09-23: a buffer added to the model AFTER a checkpoint was
+            # written is absent from that checkpoint, and a strict load then aborts with
+            #     RuntimeError: Missing key in checkpoint state_dict: ...ffwd.moe._svd_done_buf
+            # which crash-looped abl_S through 38 watchdog resubmissions. Registering it
+            # non-persistent does not help: get_model_state_dict collects non-persistent buffers
+            # too, and the subsequent module load_state_dict then rejects them as UNEXPECTED, so
+            # both settings break one cohort of checkpoints or the other. Tolerating a missing key
+            # lets the module keep its initialised value, which for a "work already done" flag is
+            # the correct reading of a checkpoint from before the flag existed. The optimizer load
+            # below has used this planner for the same reason.
+            # COST, stated plainly: a genuinely missing WEIGHT would now load silently as its
+            # initialisation instead of aborting. Verify a resumed arm's loss continues from the
+            # checkpoint rather than jumping, which is the observable that would catch it.
+            dcp.load(
+                state_dict,
+                checkpoint_id=_get_model_path(load_path),
+                planner=dcp.DefaultLoadPlanner(allow_partial_load=True),
+            )
             saver.load_state_dict(state_dict["state"])
 
             if load_optimizer:
