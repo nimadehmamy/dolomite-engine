@@ -31,6 +31,11 @@ out=[]
 for cfg in glob.glob("results/**/unsharded*/config.json",recursive=True):
     d=os.path.dirname(cfg)
     if "/milestones/" in d or os.path.basename(d).startswith("unsharded_mucal"): continue
+    # EXCLUDE throwaway dirs. Added 2026-09-23 after the IB-vs-TCP transport probes (120-500 step
+    # runs under results/_smoke/) were auto-unsharded and had FOUR eval jobs launched against them.
+    # That burns GPUs and, worse, an eval of a 120-step model can land in a results table and be
+    # read as an arm. Anything under _smoke/ or named _* is scratch by convention.
+    if "/_smoke/" in d or "/_scratch/" in d or "/ibtest" in d or "/ibpair" in d: continue
     try: c=json.load(open(cfg))
     except Exception: continue
     if not any(b.get('sparse_forward') and int(b.get('sparse_start_step') or 0)>0

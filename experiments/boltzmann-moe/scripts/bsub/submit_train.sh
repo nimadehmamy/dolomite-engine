@@ -91,6 +91,11 @@ BAD_HOSTS="p4-r10-n4"
 # The bar for BAD_HOSTS is TWO faults on the same host (what p4-r10-n4 met). Check the accumulated
 # evidence before adding anything:  bash scripts/host_placement_log.sh report
 SUSPECT_HOSTS="${SUSPECT_HOSTS-}"
+# FORCE_HOSTS="hostA hostB" pins the job to exactly those hosts via bsub -m. Use it ONLY to make a
+# throughput comparison placement-controlled: this project has measured the SAME config at
+# 2.45-6.81 s/step across host pairs, a 2.7x spread, which is larger than most effects we test for,
+# so an A/B on different hosts measures placement, not the knob. Pinning costs scheduling latency
+# (the job waits for those specific hosts), so do not use it for production runs.
 sel=""
 for h in $BAD_HOSTS ${SUSPECT_HOSTS:-}; do sel="$sel && hname!='$h'"; done
 sel="${sel# && }"
@@ -203,7 +208,7 @@ INNER
 out=$(bsub -q "$QUEUE" -G "$GRP" -J "$NAME" \
     -gpu "num=${gpn}/task:mode=exclusive_process" \
     -n "$nnodes" ${span:+-R "$span"} \
-    -R "select[$sel]" -M "$MEM" -W "$WALL" \
+    -R "select[$sel]" -M "$MEM" -W "$WALL" ${FORCE_HOSTS:+-m "$FORCE_HOSTS"} \
     -o "$HOME/bsub_logs/${NAME}_%J.stdout" \
     -e "$HOME/bsub_logs/${NAME}_%J.stderr" \
     < "$TMP" 2>&1)
