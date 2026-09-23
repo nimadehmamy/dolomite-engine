@@ -26,6 +26,13 @@ ROLES = {
  'cmix_400M_sandwich_sparse':          ('400M sandwich',          'main'),
  'cmix_400M_baseline_switch':          ('400M Switch (unmatched)','baseline'),
  'abl_B_400M_6G1x6S':                  ('400M Switch (FLOP-matched)','ABLATION B'),
+ # added 2026-09-23 when Table 1 was split by recurrence -- these must stay visible somewhere
+ 'abl_AA_134M_sandwich_isoall':        ('134M true sandwich, iso-ALL','ABLATION AA'),
+ 'abl_X_400M_hyb_rnorm_none':          ('400M hybrid, rnorm=none','main'),
+ 'abl_AD_400M_sandwich_isoall':        ('400M true sandwich, iso-ALL','ABLATION AD'),
+ 'abl_AB_400M_6G6E_deep_rnormnone':    ('400M deep 6G6E, rnorm=none','ABLATION AB'),
+ 'abl_AC_6S6E_deep_allmoe_isoactive':  ('400M deep 6S6E all-MoE','ABLATION AC'),
+ 'abl_AE_400M_6G1x6E_baseEGPT':        ('400M base EGPT, iso-active+flop','ABLATION AE'),
  'cmix1B_12L_gptDense_32B':            ('1B stacked 8G4E',        'scale'),
  'abl_C_134M_1G1x6E1G_isototal':       ('134M true sandwich, iso-total','ABLATION C'),
  'abl_D_134M_6G_dense_isototal':       ('134M GPT-only dense, iso-total','ABLATION D'),

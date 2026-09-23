@@ -27,39 +27,47 @@ from lm_engine.hf_models.modeling_utils.mlp_blocks.energy_ff_paramcount import a
 
 # scale -> [(config basename, display label, is_baseline)]
 GROUPS = [
- ('134M', [
-   ('cmix_134M_hybrid_32B_sparse',        'Hybrid (energy MoE)',        False),
-   ('cmix_134M_sandwich_32B_sparse',      'Sandwich (energy MoE)',      False),
-   # PURE-ENERGY ROWS REMOVED FROM TABLE 1, 2026-09-23 (user). All three pure variants collapse
-   # under their own deployed sparse routing -- 1x12E 34.04 (ppl 446.72), abl_W deep iso-compute
-   # 35.91 (306.11), abl_V [2,2,3] iso-total 34.37 (996.98) -- so a Table 1 row would only be a
-   # choice of which unusable number to display, and each differs in provisioning, so none is the
-   # canonical one. They stay in tab:status, where both routing paths are shown, and the failure
-   # is discussed in the text of experiments.tex. See HANDOFF 25.2.
-   ('abl_B_134M_6G1x6S',                  'Switch MoE, FLOP-matched',   True),
-   ('abl_D_134M_6G_dense_isototal',       'Dense, iso-total',           True),
-   ('abl_F_134M_6G_dense_isoactive',      'Dense, iso-active',          True),
-   # 2026-09-23: the routing_norm=none pair. On the hybrid the knob is +0.10pp; on the
-   # block-position variant it is +1.49pp, and the two together collapse the 1.37pp placement
-   # gap to 0.02pp, so quoting only the hybrid understates it (HANDOFF 24.1).
-   ('abl_R_134M_hyb_rnorm_none',           'Hybrid, routing\\_norm=none', False),
-   ('abl_U_134M_sandwich_rnorm_none',      'Block-pos, routing\\_norm=none', False),
-   # iso-ACTIVE and iso-FLOPwt with the hybrid to 3 s.f. (123.2M / 141.7M) and 11.1M FEWER total
-   # params, so it is the sharpest control we have: the mixture must beat it to earn its place.
-   ('abl_E_134M_6G1x6E_baseEGPT',          'No MoE (base EGPT)',         True),
- ]),
- ('400M', [
-   ('cmix_400M_hybrid_sparse',            'Hybrid (energy MoE)',        False),
-   ('cmix_400M_sandwich_sparse',          'Sandwich (energy MoE)',      False),
-   ('abl_H_400M_6G6E_deep',               'Deep, no recurrence (energy MoE)', False),
-   ('abl_B_400M_6G1x6S',                  'Switch MoE, FLOP-matched',   True),
-   ('abl_H_400M_6G6S_deep',               'Switch MoE, deep',           True),
-   ('abl_H_400M_6G6G_deep_isoactive',     'Dense, iso-active',          True),
- ]),
- ('1B', [
-   ('cmix1B_12L_gptDense_32B',            'Stacked 8G4E (energy MoE)',  False),
- ]),
+# RESTRUCTURED 2026-09-23: split by RECURRENCE, because FLOPwt/ACTIVE differs structurally between
+# the two classes and mixing them made the 400M tier span FLOPwt 217-325 with no two rows
+# iso-compute. Every group below is internally iso-ACTIVE and iso-FLOPwt (audit_config, <=1.1%):
+#   134M recurrent      ACTIVE 123.2-123.5   FLOPwt 141.7-143.2
+#   400M recurrent      ACTIVE 219.2-219.7   FLOPwt 299.1-301.0
+#   400M no-recurrence  ACTIVE 238.0-239.5   FLOPwt 238.0-239.5
+# A no-recurrence arm has FLOPwt == ACTIVE IDENTICALLY (every block applied once), so it can never
+# sit at the recurrent group's 220/300. That is why the split is structural and not cosmetic, and
+# why a no-rec row must NEVER be read against a recurrent row as iso-compute.
+#
+# DENSE baselines moved to Table 6 (user decision 2026-09-23: not essential here). All of them are
+# already in gen_status_table.py ROLES, so nothing is lost: abl_D_134M_6G_dense_isototal,
+# abl_F_134M_6G_dense_isoactive, abl_E_134M_6G1x6E_baseEGPT, abl_H_400M_6G6G_deep_isoactive.
+# ALSO moved out: abl_U_134M_sandwich_rnorm_none (block-POSITION variant 5G1x6E1G, not a sandwich --
+# reserved for the appendix), and cmix_400M_sandwich_sparse (layer_iterations [1,4,1] = 6 apps, so
+# ACTIVE -29% and FLOPwt -27% against the hybrid; it is OFF this group's budget and is superseded by
+# abl_AD_400M_sandwich_isoall).
+ ('134M -- recurrent (ACTIVE 123.2M, FLOPwt 141.7M)', [
+   ('cmix_134M_hybrid_32B_sparse',         'Hybrid (energy MoE)',            False),
+   ('abl_R_134M_hyb_rnorm_none',           r'Hybrid, routing\_norm=none',    False),
+   ('cmix_134M_sandwich_32B_sparse',       'Block-pos 5G1x6E1G (energy MoE)', False),
+   ('abl_AA_134M_sandwich_isoall',         'Sandwich 1G1x6E1G, iso-all',     False),
+   ('abl_B_134M_6G1x6S',                   'Switch MoE, FLOP-matched',       True),
+   ]),
+ ('400M -- recurrent (ACTIVE 219.4M, FLOPwt 299.4M)', [
+   ('cmix_400M_hybrid_sparse',             'Hybrid (energy MoE)',            False),
+   ('abl_X_400M_hyb_rnorm_none',           r'Hybrid, routing\_norm=none',    False),
+   ('abl_AD_400M_sandwich_isoall',         'Sandwich 1G1x6E1G, iso-all',     False),
+   ('abl_B_400M_6G1x6S',                   'Switch MoE, FLOP-matched',       True),
+   ]),
+ ('400M -- no recurrence (ACTIVE 238.0M, FLOPwt 238.0M)', [
+   ('abl_H_400M_6G6E_deep',                'Deep 6G6E (energy MoE)',         False),
+   ('abl_AB_400M_6G6E_deep_rnormnone',     r'Deep 6G6E, routing\_norm=none', False),
+   ('abl_AC_6S6E_deep_allmoe_isoactive',   'Deep 6S6E, all-MoE',             False),
+   ('abl_H_400M_6G6S_deep',                'Switch MoE, deep',               True),
+   ]),
+ ('1B -- no recurrence (ACTIVE 279.3M)', [
+   ('cmix1B_12L_gptDense_32B',             'Stacked 8G4E (energy MoE)',      False),
+   ]),
 ]
+
 
 SEARCH = ['configs/cmix', 'configs/iclr_26/ablations', 'configs/iclr_26/scaling', 'configs/iclr_26']
 

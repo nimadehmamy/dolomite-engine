@@ -1,0 +1,192 @@
+# abl_AE -- 400M "No MoE (base EGPT)" BASELINE, matched to the hybrid on ACTIVE and FLOPwt.
+#
+# WHY: the 400M tier's baselines were spread across three compute budgets (FLOPwt 217-325), so no
+# two rows were iso-compute. Standard adopted 2026-09-23: ACTIVE ~= 220M, FLOPwt ~= 300M, which is
+# abl_X's budget. The Switch baseline abl_B_400M_6G1x6S ALREADY sits there (300.95 / 219.69 / 400.05,
+# within 0.5% on all three) and is already evaluated. The DENSE/no-MoE baseline did not exist at that
+# budget -- abl_H_400M_6G6G_deep_isoactive is 238.02/238.02, which is the DEEP group. This file fills
+# that gap. It is the 400M analogue of abl_E_134M_6G1x6E_baseEGPT.
+#
+# Audited with energy_ff_paramcount.audit_config, NOT by hand:
+#            TOTAL(M)  ACTIVE(M)  FLOPwt(M)  apps
+#   abl_X      399.78     219.43     299.38    12   hybrid, K=32 top-2 Boltzmann MoE
+#   abl_AE     219.43     219.43     299.38    12   THIS FILE, one Hopfield expert
+#   -> ACTIVE and FLOPwt match to 0.00%.
+#
+# TOTAL is deliberately LOWER (219 vs 400). That is the point, not a defect: a single expert stores
+# no unused experts, so at equal COMPUTE the mixture has 1.82x the parameters. The comparison this
+# row supports is "does the mixture buy anything at iso-compute", and the honest way to report it is
+# with the TOTAL column visible, exactly as abl_E does at 134M (123.24 vs abl_R's 134.25).
+#
+# HOW: the Boltzmann MoE block is replaced by EnergyFF_Hopfield -- ONE expert, no router, no
+# sparsity, no Sinkhorn, no repulsion -- at intermediate_size 12510, solved so that ACTIVE and FLOPwt
+# both land on abl_X's. Everything else (6 dense GPT layers at I=4096, layer_iterations
+# [1,1,1,1,1,1,6], energy_attention on the recurrent block, schedule, mbs/ga, data) is UNCHANGED from
+# abl_X, so this isolates the mixture itself.
+#
+# NOTE the recurrence is load-bearing: FLOPwt > ACTIVE requires a REUSED block, so a no-recurrence
+# dense arm can never sit at 220/300 (with every block applied once, FLOPwt == ACTIVE identically --
+# which is why all three abl_H deep arms print the same number twice). Do not "simplify" this to a
+# flat 12-layer dense model; it would land at 220/220 and stop being iso-compute.
+#
+# 61035 steps x 524,288 tok/step (8 GPU x mbs 4 x ga 4 x 4096) = 32.0B -- LAUNCH AT EXACTLY 8 GPUs.
+# Data: the shared FULL corpus copy validated 2026-09-23.
+#
+datasets:
+- class_name: MegatronDataset
+  data_name: Megatron
+  data_sampling_ratio: 1
+  class_args:
+    eval_steps: 2
+    data_cache_path: /proj/dmfexp/nima/.cache/megatron_cmix
+    data_path:
+    - 0.35
+    - /proj/dmfexp/datasets-shared/granite-4-cmix-FULL/web-nemotron-cc-hq-p2_0
+    - 0.35
+    - /proj/dmfexp/datasets-shared/granite-4-cmix-FULL/web-nemotron-cc-hq-p2_1
+    - 0.15
+    - /proj/dmfexp/datasets-shared/granite-4-cmix-FULL/megamath-web-pro_0
+    - 0.15
+    - /proj/dmfexp/datasets-shared/granite-4-cmix-FULL/finemath-3plus-rewritten_0
+    split: 99,0.5,0.5
+    sequence_length: 4096
+tokenizer_args:
+  tokenizer_name: /proj/datasets/tokenizers/granite-4.0-tiktoken
+model_args:
+  model_class: AutoModelForCausalLM
+  pretrained_config:
+    model_type: energy
+    num_iterations: 1
+    num_pre_layers: 0
+    num_post_layers: 0
+    layer_iterations:
+    - 1
+    - 1
+    - 1
+    - 1
+    - 1
+    - 1
+    - 6
+    initializer_range: 0.02
+    layer_norm_epsilon: 1.0e-05
+    normalization_function: rmsnorm
+    position_embedding_type: rope
+    rope_dim: 64
+    hidden_size: 1024
+    num_layers: 7
+    init_method: normal
+    tie_word_embeddings: true
+    energy_proj_type: psd_anti
+    bos_token_id: 100257
+    eos_token_id: 100257
+    pad_token_id: 100256
+    vocab_size: 100352
+    max_position_embeddings: 4096
+    sequence_mixer_blocks:
+    - sequence_mixer_type: softmax_attention
+      num_attention_heads: 16
+      num_key_value_heads: 16
+      add_bias: false
+      attention_multiplier: 0.125
+    - sequence_mixer_type: softmax_attention
+      num_attention_heads: 16
+      num_key_value_heads: 16
+      add_bias: false
+      attention_multiplier: 0.125
+    - sequence_mixer_type: softmax_attention
+      num_attention_heads: 16
+      num_key_value_heads: 16
+      add_bias: false
+      attention_multiplier: 0.125
+    - sequence_mixer_type: softmax_attention
+      num_attention_heads: 16
+      num_key_value_heads: 16
+      add_bias: false
+      attention_multiplier: 0.125
+    - sequence_mixer_type: softmax_attention
+      num_attention_heads: 16
+      num_key_value_heads: 16
+      add_bias: false
+      attention_multiplier: 0.125
+    - sequence_mixer_type: softmax_attention
+      num_attention_heads: 16
+      num_key_value_heads: 16
+      add_bias: false
+      attention_multiplier: 0.125
+    - sequence_mixer_type: energy_attention
+      num_attention_heads: 16
+      num_key_value_heads: 16
+      add_bias: false
+      attention_multiplier: 0.125
+    mlp_blocks:
+    - mlp_type: MLP
+      activation_function: swiglu
+      intermediate_size: 4096
+      add_bias: false
+    - mlp_type: MLP
+      activation_function: swiglu
+      intermediate_size: 4096
+      add_bias: false
+    - mlp_type: MLP
+      activation_function: swiglu
+      intermediate_size: 4096
+      add_bias: false
+    - mlp_type: MLP
+      activation_function: swiglu
+      intermediate_size: 4096
+      add_bias: false
+    - mlp_type: MLP
+      activation_function: swiglu
+      intermediate_size: 4096
+      add_bias: false
+    - mlp_type: MLP
+      activation_function: swiglu
+      intermediate_size: 4096
+      add_bias: false
+    - mlp_type: EnergyFF_Hopfield
+      intermediate_size: 12510
+      hopfield_grad_scale: sqrt_consistent
+      gelu_grad_method: sigmoid
+      activation_function: gelu
+      add_bias: false
+tuning_args:
+  tuning_method: pretraining
+save_args:
+  save_path: /proj/dmfexp/nima/Code/dolomite-engine/experiments/boltzmann-moe/results/iclr26_abl/abl_AE_400M_6G1x6E_baseEGPT
+  save_interval: 200
+  max_to_keep: 2
+logging_args:
+  log_interval: 10
+  experiments_tracker_name: wandb
+  wandb_args:
+    project: energy-inference-large
+    name: abl_AE_400M_6G1x6E_baseEGPT
+training_parameters:
+  num_training_steps: 61035
+  eval_interval: 5000
+  micro_batch_size: 4
+  gradient_accumulation_steps: 4
+  eval_during_training: false
+  gradient_clipping: 1
+optimizer_args:
+  class_name: TorchAdamW
+  class_args:
+    lr: 2e-3
+    weight_decay: 0.1
+    betas:
+    - 0.9
+    - 0.95
+    eps: 1.0e-08
+lr_scheduler_args:
+  lr_decay_style: cosine
+  lr_decay_factor: 0.1
+  num_warmup_steps: 2000
+  num_constant_steps: 53000
+  num_decay_steps: 6035
+mixed_precision_args:
+  dtype: bf16
+distributed_args:
+  fsdp_algorithm: 2
+  gradient_checkpointing_method: block
+  torch_compile: true
+  stage: 0
