@@ -370,3 +370,32 @@ gives the proxy's accuracy separately. Evals for all three sparse exports are ru
 configuration is a trap, because the eval tooling globs for the newest `harness_results*.json` and
 nothing ties a number back to which export produced it. The `sparseeval_*` convention introduced
 today at least makes the routing path visible in the path name.
+
+## 2026-09-23 (g) — my own Bug A fix broke loading of every older checkpoint
+
+Self-inflicted, and worth recording because the failure mode is the one I had explicitly argued
+against inflicting elsewhere.
+
+The Bug A fix made `_svd_done_buf` a PERSISTENT buffer so the SVD refit would survive a requeue.
+That adds a state-dict key absent from every checkpoint written before 2026-09-22, and
+`lm_engine/unshard.py` loads strictly, so unsharding aborted:
+
+```
+Missing key(s) in state_dict: "model.transformer.h.1.ffwd.moe._svd_done_buf"
+```
+
+Found on `abl_C`, a COMPLETE 32B arm with no evaluation — i.e. it silently blocked getting numbers
+out of finished work, and would have blocked any completed arm needing a fresh export.
+
+The irony is precise: in `sparse_eval.py` I wrote that `_sparse_active` must NOT become a persistent
+buffer because "a persistent `_sparse_active` buffer or a `train(False)` hook would change training
+behaviour and break strict loading of existing checkpoints" -- and then shipped exactly that breakage
+via a different buffer in the same file.
+
+**Fix:** a `_load_state_dict_pre_hook` that supplies the default when the key is absent. Strict
+loading stays strict for real weights; a missing flag reads as 0 = "refit not recorded as done",
+which is what absence meant before the buffer existed. Not `persistent=False` (that would discard the
+Bug A fix) and not `strict=False` (that would hide genuine missing weights).
+
+**Rule for this codebase:** any new persistent buffer needs a back-compat load hook in the same
+commit, because checkpoints here outlive the code by weeks and the loader is strict.

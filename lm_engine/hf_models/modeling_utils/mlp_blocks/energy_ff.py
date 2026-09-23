@@ -74,7 +74,7 @@ _SIGMOID_SCALE: float = (2.0 / math.pi) ** 0.5
 
 
 
-_HOPFIELD_GRAD_SCALES = ("mean", "inv_sqrt", "sqrt_consistent")
+_HOPFIELD_GRAD_SCALES = ("mean", "inv_sqrt", "sqrt_consistent", "exact")
 
 
 def _hopfield_grad_prefactor(intermediate_size: int, mode: str) -> float:
@@ -149,6 +149,22 @@ def _hopfield_grad_prefactor(intermediate_size: int, mode: str) -> float:
         return intermediate_size ** -0.5
     if mode == "sqrt_consistent":
         return 4.0 * intermediate_size ** -0.5
+    if mode == "exact":
+        # 2026-09-21. THE ONLY MODE THAT RETURNS grad_h E EXACTLY, and it is exact ONLY
+        # with gelu_grad_method="erf_exact" (or "tanh_exact"). Verified by autograd in
+        # float64: with erf_exact the ratio ||forward|| / ||dE/dh|| is 1.000000 and the
+        # cosine is 1.00000000.
+        #
+        # WHY 2/I_e AND NOT 4/I_e. E = mean_j gelu(Wh)_j^2, so
+        #     grad_h E = (2/I_e) W^T (gelu(Wh) . gelu'(Wh)).
+        # The "mean" mode returns 4/I_e because the DEFAULT gelu_grad_method="sigmoid"
+        # hands back phi' = 0.5*sigmoid(1.702 x), i.e. HALF the true derivative, and the
+        # extra 2 cancels that 0.5. Pair "mean" with erf_exact and you get exactly 2x the
+        # true gradient (measured: ratio 2.000000); pair "exact" with sigmoid and you get
+        # half of it. THESE TWO KNOBS ARE NOT INDEPENDENT -- always set them together:
+        #     exact energy descent  ->  hopfield_grad_scale: exact + gelu_grad_method: erf_exact
+        #     legacy (approx, ~1.02) ->  hopfield_grad_scale: mean  + gelu_grad_method: sigmoid
+        return 2.0 / intermediate_size
     raise ValueError(f"unknown hopfield_grad_scale ({mode})")
 
 
@@ -219,6 +235,30 @@ def _gelu_and_grad(x: torch.Tensor, method: str) -> tuple[torch.Tensor, torch.Te
 # EMA momentum for the running Sinkhorn dual. 0.01 => ~100-step time constant, fast
 # enough to converge inside any real run and inside a short calibration pass.
 _SINKHORN_MU_MOMENTUM = 0.01
+
+
+def _copy_full_into(param, full_new) -> None:
+    """Write a FULL plain tensor into a parameter that may be an FSDP-sharded DTensor.
+
+    2026-09-22 FIX. `param.data[k].copy_(plain_tensor)` raises
+        "aten.copy_.default got mixed torch.Tensor and DTensor"
+    because FSDP shards proxy_V / proxy_B while the SVD factors are plain. A bare
+    `except Exception` swallowed it, so `proxy_init: svd` was a SILENT NO-OP on every run --
+    893 warnings across 36 logs, on nine arms including the 134M baseline.
+    """
+    t = param.data
+    new = full_new.to(dtype=t.dtype)
+    if hasattr(t, "device_mesh") and hasattr(t, "placements"):
+        from torch.distributed.tensor import distribute_tensor
+        t.copy_(distribute_tensor(new.to(t.device), t.device_mesh, t.placements))
+    else:
+        t.copy_(new.to(t.device))
+
+
+def _gather_full(param):
+    """Full plain tensor for a possibly-sharded parameter."""
+    t = param.data
+    return t.full_tensor() if hasattr(t, "full_tensor") else t
 
 
 class FFEnergyBase(nn.Module):
@@ -1085,6 +1125,19 @@ class BoltzmannMoEFFEnergy(FFEnergyBase):
                 self.proxy_scale = nn.Parameter(torch.ones(*pre, self.n_experts))
                 self.proxy_bias = nn.Parameter(torch.zeros(*pre, self.n_experts))
                 self.proxy_quad = self.proxy_lin = None
+            # PERSISTED so a resume cannot re-run the SVD refit and overwrite a distilled
+            # proxy. Plain `_svd_done` resets in every new process (2026-09-22 audit).
+            self.register_buffer("_svd_done_buf", torch.zeros((), dtype=torch.long), persistent=True)
+            # BACK-COMPAT (2026-09-23). Making this buffer persistent is what lets the SVD refit
+            # survive a requeue, but it also adds a key that NO checkpoint written before
+            # 2026-09-22 contains -- and `lm_engine/unshard.py` loads strictly, so every such
+            # checkpoint aborted with:
+            #     Missing key(s) in state_dict: "....ffwd.moe._svd_done_buf"
+            # That broke unsharding of already-COMPLETE arms (found on abl_C, a finished 32B arm).
+            # Supplying the default in a pre-hook keeps strict loading honest -- it still catches a
+            # genuinely missing weight -- while treating an absent flag as "refit not yet done",
+            # which is exactly what it meant before the buffer existed.
+            self._register_load_state_dict_pre_hook(self._svd_done_buf_backcompat)
             if self.proxy_iters > 1:
                 self.register_buffer("_proxy_call", torch.zeros((), dtype=torch.long),
                                      persistent=False)
@@ -1146,6 +1199,17 @@ class BoltzmannMoEFFEnergy(FFEnergyBase):
 
     # --- public surface --------------------------------------------------- #
 
+    def _svd_done_buf_backcompat(self, state_dict, prefix, local_metadata, strict,
+                                 missing_keys, unexpected_keys, error_msgs) -> None:
+        """Let a pre-2026-09-22 checkpoint load: default `_svd_done_buf` to 0 when absent.
+
+        0 means "the SVD refit has not been recorded as done", which is the correct reading of a
+        checkpoint from before the flag was persisted. Only fills a key this module actually owns.
+        """
+        key = prefix + "_svd_done_buf"
+        if key not in state_dict and hasattr(self, "_svd_done_buf"):
+            state_dict[key] = torch.zeros((), dtype=torch.long)
+
     def _svd_refit_proxy(self) -> None:
         """Refit proxy_V / proxy_B from the rank-r SVD of each expert weight.
 
@@ -1159,7 +1223,13 @@ class BoltzmannMoEFFEnergy(FFEnergyBase):
         0.0893 distilled / 0.5541 SVD / 0.0378 random. Distillation continues afterwards --
         SVD is optimal for ||W_k x|| in Frobenius norm, not for the RANKING the router needs.
         """
-        if getattr(self, "_svd_done", False) or self.proxy_rank <= 0:
+        # Read the PERSISTED flag. `_svd_done` is a plain attribute that resets in every new
+        # process, so a resume past sparse_start_step re-triggers this and, now that the write
+        # actually works, would clobber the distilled proxy with a fresh SVD.
+        if self.proxy_rank <= 0:
+            return
+        if getattr(self, "_svd_done", False) or bool(self._svd_done_buf.item()):
+            self._svd_done = True
             return
         if getattr(self, "proxy_V", None) is None or getattr(self, "proxy_B", None) is None:
             return                                   # quad head has no B; not supported
@@ -1172,19 +1242,32 @@ class BoltzmannMoEFFEnergy(FFEnergyBase):
                 W = W.view(self.n_experts, self._expert_I, self.hidden_size).float()
                 r = self.proxy_V.shape[-1]
                 m = self.proxy_B.shape[-2]
+                # Build FULL replacements, then write each parameter ONCE through
+                # _copy_full_into, which redistributes when the target is sharded. Writing
+                # per-expert into `.data[k]` is what raised the DTensor error before.
+                V_new  = _gather_full(self.proxy_V).clone().float()
+                B_new  = _gather_full(self.proxy_B).clone().float()
+                sc_new = _gather_full(self.proxy_scale).clone().float()
+                bi_new = _gather_full(self.proxy_bias).clone().float()
                 for k in range(self.n_experts):
                     U, S, Vh = torch.linalg.svd(W[k], full_matrices=False)
-                    self.proxy_V.data[k].copy_(Vh[:r].T.to(self.proxy_V.dtype))
+                    V_new[k] = Vh[:r].T
                     US = U[:, :r] * S[:r]
                     rows = US.norm(dim=-1).topk(min(m, US.shape[0])).indices
-                    self.proxy_B.data[k].zero_()
-                    self.proxy_B.data[k][: rows.numel()].copy_(US[rows].to(self.proxy_B.dtype))
-                    self.proxy_scale.data[k] = 1.0
-                    self.proxy_bias.data[k] = 0.0
+                    B_new[k].zero_()
+                    B_new[k][: rows.numel()] = US[rows]
+                    sc_new[k] = 1.0
+                    bi_new[k] = 0.0
+                _copy_full_into(self.proxy_V, V_new)
+                _copy_full_into(self.proxy_B, B_new)
+                _copy_full_into(self.proxy_scale, sc_new)
+                _copy_full_into(self.proxy_bias, bi_new)
+            self._svd_done_buf.fill_(1)
             self._svd_done = True
         except Exception as e:                        # never let a warm start kill a long run
             import logging
             logging.getLogger(__name__).warning("proxy SVD refit skipped: %r", e)
+            self._svd_done_buf.fill_(1)
             self._svd_done = True
 
     def set_training_step(self, step: int) -> None:
