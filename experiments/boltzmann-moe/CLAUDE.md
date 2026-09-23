@@ -18,17 +18,38 @@
 > predicts 0.70 x 0.47 x 0.85 ≈ 0.28 nats against the 0.32 observed, i.e. all of it. Comparisons
 > *within* the knob sweep are valid; all six share the subset.
 >
-> **For anything that must match the 32B table, use the FULL corpus — it needs no copying.**
-> `/proj/datasets/ndehmamy-dataset-rescue/` holds the full `.bin` AND matching full `.idx` for all
-> four datasets as **hard links** (`links=2`, same inode as the owners' path, `dev=54`). Hard links
-> keep the inode alive after the owners unlink their name, so their deletion does not destroy the
-> data. Use a FRESH `data_cache_path` — the Megatron blend index is keyed on the mix and collides
-> with the subset's cache otherwise.
+> **USE `/proj/dmfexp/datasets-shared/granite-4-cmix-FULL/` — an INDEPENDENT FULL-CORPUS COPY, made
+> and validated 2026-09-23.** 2.28 TB of real blocks, not hard links, on a DIFFERENT fileset
+> (`dmfexp`) from the owners' data, so it survives both an `rm` and a purge of the `datasets`
+> fileset. Validated end to end, not just by size: token counts read from each `.idx` match the
+> source exactly (`p2_0` 268,717,261,507, `p2_1` 267,862,755,688, `megamath` 13,011,272,317,
+> `finemath` 21,118,698,552 = **570.7B tokens**), bytes/token 4.00, first and last document of each
+> shard decode, and a 40-step 2-GPU training smoke test ran clean with the trainer reporting
+> `Tokens per epoch: 265485990821` for `p2_1` (99% of the full shard; the subset prefix would report
+> ~50B). Script: `scripts/validate_full_corpus_20260923.sh`.
 >
-> **Limits of that protection, so it is not over-trusted:** a hard link defends against `rm` only,
-> not against in-place truncation (both names share one set of blocks), and both paths sit in the
-> SAME fileset (`datasets` on `ess6000-1`), so a fileset purge takes both. A second independent copy
-> is not possible: `/proj/dmfexp` is at **100%** (3.2 T free of 350 T).
+> The files are **mode 444 and the directory is not group-writable** — deliberately, so no one can
+> truncate them in place. Readable by everyone in POSIX group `proj_dmfexp` (verified for bsaha3,
+> mau, bharat, csabath; **rpanda is NOT in that group** and cannot read it). LSF `grp_ebm` is an LSF
+> group and has nothing to do with file access.
+>
+> A group-writable SHARED Megatron blend cache sits at
+> `/proj/dmfexp/datasets-shared/.cache_megatron_cmix_FULL`, so the first person to run pays the index
+> build and everyone after reuses it. Still use a FRESH cache if you change the mix or the paths —
+> the blend index is keyed on both.
+>
+> **Ready-to-copy config: `configs/RECOMMENDED_400M_hybrid_best.yml`** (already points here).
+>
+> **Copying 2.28 TB takes ~5 minutes, not 6 hours.** The first attempt ran at 106 MiB/s because the
+> script wrapped `cp` in `ionice -c2 -n7`, the LOWEST I/O priority, as a single stream with the
+> default block size. `scripts/copy_corpus_fast_20260923.sh` does one `dd bs=64M` stream per file in
+> parallel with NO `ionice` and hits ~7.2 GB/s aggregate (3.2 GB/s single-stream). It writes to
+> `.part` and renames only on an exact byte-size match, so it is safely resumable.
+>
+> `/proj/datasets/ndehmamy-dataset-rescue/` (hard links, `links=2`, `dev=54`) is now a BACKUP of last
+> resort rather than the primary. Its limits are why the independent copy was made: a hard link
+> defends against `rm` only, not against in-place truncation (both names share one set of blocks),
+> and it sits in the same `datasets` fileset as the owners' path, so a fileset purge takes both.
 >
 > **NEVER pair indices across directories.** `full-corpus-indices/*.idx` + subset `.bin` reads past
 > EOF; subset `.idx` + full `.bin` silently trains on the first 18.6% only. Neither necessarily
