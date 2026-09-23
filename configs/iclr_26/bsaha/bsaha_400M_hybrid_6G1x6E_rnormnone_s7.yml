@@ -1,23 +1,34 @@
-# cmix_400M_hybrid_sparse -- PRIORITY 3. 400M hybrid: 6 dense-GPT layers (I=4096) then ONE energy block recurred x6.
-# The 400M analogue of cmix_134M_hybrid's [1,1,1,1,1,1,6] shape. K=16, I_e=11742, sparse.
-# ISO-PARAM with cmix_400M_baseline_switch: hopfield stores 1 matrix/expert, swiglu MoE stores 3,
-# so energy I_total 187,872 == 3 x MoE I_total 62,624. Same rule the 134M pair uses.
-# 61035 steps x 524,288 tok/step (8 GPU x mbs 2 x ga 8 x 4096) = 32.0B -- LAUNCH AT 8 GPUs.
-# mbs 2 (not the sandwich's 1): tokens/call 8192 is the WINNING column for sparse_forward.
-# sinkhorn_mu_iters 6 == layer_iterations[6]. repulsion output+subsample (multi-node safe).
-# proxy_init: svd -- refit the proxy from the rank-r SVD of each expert weight at the
-# dense->sparse switch. MEASURED on a trained 1B ckpt: top-2 agreement with the exact
-# energies 0.0893 (distilled) vs 0.5541 (SVD) vs 0.0378 (random). Distillation continues
-# after the refit; SVD is a warm start, not a replacement.
-# K 16 -> 32 (2026-09-17), ISO-PARAM: I_total stays 187,872, so I_e halves to 5,871
-# and total params are unchanged at 400M. p stays 4 (top-2 + 2 explore), so
-# p/K falls 0.250 -> 0.125 and the sparse CEILING doubles 4.0x -> 8.0x.
-# Rationale: (a) doubles the achievable saving at no parameter cost; (b) I_e=5,871 is
-# still inside the proven 4480-15872 band; (c) our best historical arm was K=32/top-2
-# (iclr_hop_K32_top2_sink, Avg11 44.58, against 40.96 for a K=16 pure); (d) it gives the
-# paper a K axis that varies while recurrence is held, which the K=16/K=64 set could not.
-# Switched at step ~500 of 61035 (0.8%), so the restart cost ~5 minutes.
-
+# 400M HYBRID 6G1x6E, routing_norm=none, SEED 7.  For bsaha.
+# A SEED REPLICATE of our live abl_X_400M_hyb_rnorm_none (which runs the default seed).  We have two
+# seeds at 134M and only ONE at 400M, and the 134M pair showed the seed spread is NOT negligible:
+# 0.16pp Avg11 on the oracle-routed path but 0.87pp on the DEPLOYED sparse path.  A single 400M
+# number therefore cannot support a claim of the size we want to make, which is why this exists.
+#
+# LAUNCH:
+#   cd /proj/dmfexp/nima/Code/dolomite-engine
+#   bash experiments/boltzmann-moe/scripts/bsub/submit_train.sh bsaha_400M_hyb_s7 \
+#        configs/iclr_26/bsaha/bsaha_400M_hybrid_6G1x6E_rnormnone_s7.yml 8 preemptable 24:00 400G
+#
+# STRUCTURE: 6 dense GPT blocks (I=4096) then ONE energy Boltzmann-MoE block applied SIX times
+# (layer_iterations [1,1,1,1,1,1,6] = 12 applications).  1x6E means ONE block reused six times; six
+# distinct blocks is a different model.  K=32, top-2, intermediate_size 187872 TOTAL across experts
+# (I_e=5871, I_e/hidden 5.73).  TOTAL/ACTIVE/FLOPwt = 399.78 / 219.43 / 299.38 M.
+#
+# 61035 steps x 524,288 tok/step (8 GPU x mbs 4 x ga 4 x 4096) = 32.0B.  LAUNCH AT EXACTLY 8 GPUs --
+# GPUS IS NOT IN THIS FILE, so 4 GPUs would silently give half the budget and the run would not be
+# comparable to anything in our tables.  tokens/call = 16,384, the column where sparse_forward wins.
+#
+# routing_norm: none is the single largest knob we found: at 134M it is +1.49pp Avg11 on the
+# block-position variant, +0.10pp on the hybrid, it collapses a 1.37pp block-placement penalty to
+# 0.02pp, it does NOT collapse routing (least-used expert 0.26% -> 5.1% of tokens, effK 13.79 ->
+# 15.83 of 16) and it is ~24% faster.  It IS worse on train loss (+0.047 nats) -- for this knob loss
+# has been the wrong signal three times, so select on Avg11, not loss.
+#
+# Multi-node safe if you scale it up: repulsion_space output + subsample 64 (weight-space WEDGES
+# silently on >1 node), stage 0, and the submitter sets NCCL_IB_DISABLE=1 for multi-node.
+# Data is the shared FULL corpus copy.  On launch the trainer logs `Tokens per epoch:` per shard --
+# the two web shards must read ~265-266e9; ~50e9 means the biased 18.6%-prefix subset.
+#
 datasets:
 - class_name: MegatronDataset
   data_name: Megatron
@@ -135,7 +146,7 @@ model_args:
       n_experts: 32
       top_k: 2
       hopfield_grad_scale: sqrt_consistent
-      routing_norm: zscore
+      routing_norm: none
       temperature: 1.0
       repulsion_form: abs
       repulsion_coef: 0.1
@@ -166,7 +177,7 @@ model_args:
 tuning_args:
   tuning_method: pretraining
 save_args:
-  save_path: /proj/dmfexp/nima/Code/dolomite-engine/experiments/boltzmann-moe/results/cmix/cmix_400M_hybrid_sparse
+  save_path: /proj/dmfexp/nima/Code/dolomite-engine/experiments/boltzmann-moe/results/bsaha/bsaha_400M_hybrid_6G1x6E_rnormnone_s7
   save_interval: 200
   max_to_keep: 2
 logging_args:
@@ -174,12 +185,12 @@ logging_args:
   experiments_tracker_name: wandb
   wandb_args:
     project: energy-inference-large
-    name: cmix_400M_hybrid_sparse
+    name: bsaha_400M_hybrid_6G1x6E_rnormnone_s7
 training_parameters:
   num_training_steps: 61035
   eval_interval: 5000
-  micro_batch_size: 2
-  gradient_accumulation_steps: 8
+  micro_batch_size: 4
+  gradient_accumulation_steps: 4
   eval_during_training: false
   gradient_clipping: 1
 optimizer_args:
@@ -204,3 +215,5 @@ distributed_args:
   gradient_checkpointing_method: block
   torch_compile: true
   stage: 0
+random_args:
+  seed: 7

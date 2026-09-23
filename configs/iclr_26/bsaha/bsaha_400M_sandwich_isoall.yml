@@ -1,3 +1,38 @@
+# abl_AD -- 400M TRUE SANDWICH MATCHED ON ALL THREE PARAMETER AXES.  The 400M analogue of abl_AA.
+#
+# READY TO RUN, NOT YET LAUNCHED -- offered for a colleague to pick up.  Launch with:
+#   bash experiments/boltzmann-moe/scripts/bsub/submit_train.sh abl_AD_400M_isoall \
+#        configs/iclr_26/ablations/bsaha_400M_sandwich_isoall.yml 8 preemptable 24:00 400G
+# The data path already points at the shared FULL corpus, readable by POSIX group proj_dmfexp.
+# CHANGE save_path and the wandb name below if you do not want to write into our results tree.
+#
+# WHY IT IS NEEDED.  The 400M sandwich currently in Table 1 (abl_Y) is iso-TOTAL with the hybrid
+# abl_X and badly short on the other two axes, because its layer_iterations is [1,4,1] = 6 block
+# applications against the hybrid's 12:
+#
+#                    TOTAL(M)  ACTIVE(M)  FLOPwt(M)  apps   vs abl_X
+#   abl_X hybrid       399.78     219.43     299.38    12   reference
+#   abl_Y sandwich     400.33     156.54     217.20     6   ACTIVE -28.7%, FLOPwt -27.5%
+#   abl_AD (this)      399.51     219.16     299.11     8   all three within 0.13%
+#
+# Parameters in millions.  The point is EQUALITY with abl_X, not a maximum.  So any "sandwich loses
+# to hybrid" read from abl_Y is confounded with a 28% compute deficit.  abl_X is also 2.2x slower
+# per step than abl_Y for exactly this reason (3.368 vs 1.556 s/step): it does twice the work.
+#
+# HOW.  The mixture block is left BYTE-IDENTICAL to abl_X's (K=32, top_k=2, intermediate_size
+# 187872, I_e=5871, I_e/hidden=5.73) and applied R=6 times as in abl_X.  The two dense bread blocks
+# absorb what the hybrid's other four dense blocks carried: intermediate_size 4096 -> 14976,
+# I_G/hidden 4.00 -> 14.62.  Widening the EXPERTS instead cannot work: TOTAL scales with K*I_e and
+# ACTIVE only with k*I_e, so at K/k=16 a wider expert overshoots total 16x faster than it fixes
+# active.  That is precisely how abl_Y ended up iso-total only.
+#
+# sinkhorn_mu_iters raised 4 -> 6 to match the new layer_iterations entry (pre-flight rule 9).
+# Without that the router is trained tilted and evaluated untilted.
+#
+# 61035 steps x 524,288 tok/step (8 GPU x mbs 4 x ga 4 x 4096) = 32.0B -- LAUNCH AT EXACTLY 8 GPUs.
+# tokens/call = 4 x 4096 = 16,384, the column where sparse_forward wins 2.1-2.4x.
+# Expect roughly abl_X's step time (same applications, same mixture block), so ~50-57 h at 8 GPUs.
+#
 # cmix_400M_sandwich_sparse -- IDENTICAL to t32B_sandwich_sparse.yml EXCEPT the datamix (70/30 web/math,
 # from the colleagues' s8e4_stdmoe_fh2_boltz_topk2.yml). Architecture, recurrence,
 # hopfield experts, Sinkhorn, sparsity and schedule are UNCHANGED, so this is a
@@ -91,7 +126,7 @@ model_args:
     num_post_layers: 0
     layer_iterations:
     - 1
-    - 4
+    - 6
     - 1
     initializer_range: 0.02
     layer_norm_epsilon: 1.0e-05
@@ -125,15 +160,15 @@ model_args:
     - &id002
       mlp_type: MLP
       activation_function: swiglu
-      intermediate_size: 4096
+      intermediate_size: 14976
       add_bias: false
     - mlp_type: EnergyFF_BoltzmannMoE
       expert_kind: hopfield
-      intermediate_size: 253952
+      intermediate_size: 187872
       n_experts: 32
       top_k: 2
       hopfield_grad_scale: sqrt_consistent
-      routing_norm: zscore
+      routing_norm: none
       temperature: 1.0
       repulsion_form: abs
       repulsion_coef: 0.1
@@ -144,7 +179,7 @@ model_args:
       e_sign_override: pos
       sinkhorn_iters: 3
       sinkhorn_persist_mu: true
-      sinkhorn_mu_iters: 4
+      sinkhorn_mu_iters: 6
       repulsion_tensor_idx: true
       renormalize_topk: true
       fused_experts: true
@@ -165,7 +200,7 @@ model_args:
 tuning_args:
   tuning_method: pretraining
 save_args:
-  save_path: /proj/dmfexp/nima/Code/dolomite-engine/experiments/boltzmann-moe/results/tok32B/cmix_400M_sandwich_sparse
+  save_path: /proj/dmfexp/nima/Code/dolomite-engine/experiments/boltzmann-moe/results/bsaha/bsaha_400M_sandwich_isoall
   save_interval: 200
   max_to_keep: 2
 logging_args:
@@ -173,12 +208,12 @@ logging_args:
   experiments_tracker_name: wandb
   wandb_args:
     project: energy-inference-large
-    name: cmix_400M_sandwich_sparse
+    name: bsaha_400M_sandwich_isoall
 training_parameters:
   num_training_steps: 61035
   eval_interval: 5000
-  micro_batch_size: 1
-  gradient_accumulation_steps: 16
+  micro_batch_size: 4
+  gradient_accumulation_steps: 4
   eval_during_training: false
   gradient_clipping: 1
 optimizer_args:

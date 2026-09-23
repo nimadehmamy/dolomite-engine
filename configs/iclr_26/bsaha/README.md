@@ -1,95 +1,60 @@
-# For bsaha — lower-priority long runs, all RESUMABLE, all fine on preemptable
+# 400M configs for bsaha
 
-These four are real paper arms that we deprioritised for GPU reasons, not scientific ones. Your
-fairshare is better than ours (ours is **0.0030**, against ~0.333 for a fresh user), so these will
-actually schedule for you.
+Updated 2026-09-23. **Every config here reads
+`/proj/dmfexp/datasets-shared/granite-4-cmix-FULL`**, an independent full-corpus copy (570.7B
+tokens, validated 2026-09-23, mode 444, readable by POSIX group `proj_dmfexp`). The originals named
+`/proj/datasets/granite-4-datasets-megatron-merged`, which the owners may delete at any time.
 
-**All four have checkpoints and resume automatically** — `submit_train.sh` resolves `load_args` at
-run time, so a preemption costs only the steps since the last save.
+## Launch
 
-| config | GPUs | resumes at | target | what it is |
-|---|---|---|---|---|
-| `abl_G_400M_6G1x6E1x6E_4gpu.yml` | **4** | 8,200 | 61,035 | TWO recurrent energy blocks (12 energy applications/token). **MUST be 4 GPUs single-node** — see below. ~8.5 s/step, so 32B needs ~126 h |
-| `abl_G_400M_6G1x6S1x6S.yml` | 8 | 21,400 | 61,035 | its FLOP-matched Switch twin, ~3.1 s/step |
-| `abl_C_134M_1G1x6E1G_isototal.yml` | 4 | 60,000 | 122,070 | the TRUE 134M sandwich (`1G1x6E1G`), iso-total |
-| `abl_G_400M_6G1x6E1x6E.yml` | 8 | — | — | the 8-GPU variant. **Do not use** unless a whole host is free; kept for reference |
-
-## How to launch
+Never hand-roll the bsub. `-gpu "num=16/task" -n 1` asks for 16 GPUs on ONE host and PENDs forever;
+hosts here have 8. The submitter encodes the node shape, the ptile/blaunch rules and the resume:
 
 ```bash
 cd /proj/dmfexp/nima/Code/dolomite-engine
-export WANDB__SERVICE_WAIT=300          # the 30 s default has killed a 400M arm at rank 0
-bash experiments/boltzmann-moe/scripts/bsub/submit_train.sh \
-     abl_G_400M_6G1x6E1x6E_4gpu configs/iclr_26/bsaha/abl_G_400M_6G1x6E1x6E_4gpu.yml \
-     4 preemptable 24:00 160G
-# 8-GPU arms need the node shape forced to 2x4 (a single host with 8 free GPUs rarely places here):
-bash experiments/boltzmann-moe/scripts/bsub/submit_train.sh \
-     abl_G_400M_6G1x6S1x6S configs/iclr_26/bsaha/abl_G_400M_6G1x6S1x6S.yml \
-     8 preemptable 24:00 160G 4
+bash experiments/boltzmann-moe/scripts/bsub/submit_train.sh <jobname> <config> 8 preemptable 24:00 400G
 ```
 
-## Four things that will otherwise cost you a run
+**`tokens/step = GPUS x micro_batch_size x gradient_accumulation_steps x sequence_length`, and GPUS
+IS NOT IN THE CONFIG.** Every 400M file here wants **exactly 8 GPUs** for its 32.0B budget; at 4 it
+silently trains on half and is not comparable to anything in our tables.
 
-1. **`abl_G_400M_6G1x6E1x6E` MUST be single-node.** It carries `sinkhorn_persist_mu: true` in BOTH
-   energy blocks, and persist_mu's data-dependent `.item()` inside the compiled region **wedges on
-   multi-node**: job 1798098 compiled fine, then sat at 0 steps for 34 minutes with LSF still
-   reporting RUN and flat CPU. The `_4gpu` file is `mbs 2 x ga 16` so 4 GPUs still give the correct
-   524,288 tok/step.
-2. **GPU count is NOT in the config** and it sets the token budget:
-   `tokens/step = GPUS x mbs x ga x sequence_length`. Use the count in the table. A wrong count
-   silently halves or doubles the budget — that happened to us three times in one session.
-3. **Step lines go to STDERR**, not stdout. `tail -3 $HOME/bsub_logs/<name>_<jobid>.stderr`.
-   stdout holds only the launcher echo, `ninja:` and the NCCL banner, so grepping it looks exactly
-   like a silent hang.
-4. **Sub-60-second deaths are transient, ~50% of multi-node starts.** `gloo ... Connection closed by
-   peer`, `lsb_launch(): Failed`, or a wandb `ServiceStartTimeoutError` all mean *resubmit*, not
-   *debug*. Only investigate if the same arm fails the same way three times. And a genuinely wedged
-   job ignores plain `bkill` — use `bkill -r`.
+**Sanity check on launch:** the trainer logs `Tokens per epoch:` per shard. The two web shards must
+read ~265-266e9. ~50e9 means the biased 18.6%-prefix subset, whose loss is ~0.47 nats easier.
 
----
+## What to run first
 
-# ALSO HERE: the four 400M arms we are running right now
+| config | why | TOTAL / ACTIVE / FLOPwt (M) |
+|---|---|---|
+| **`bsaha_400M_hybrid_6G1x6E_rnormnone_s7.yml`** | **seed replicate of our live 400M hybrid.** We have 2 seeds at 134M and only 1 at 400M, and the 134M pair showed 0.16pp Avg11 spread on the oracle path but **0.87pp on the deployed sparse path** | 399.8 / 219.4 / 299.4 |
+| **`bsaha_400M_sandwich_isoall.yml`** | **the sandwich matched on all three axes.** Without it the 400M sandwich row stays 28% short on compute | 399.5 / 219.2 / 299.1 |
 
-If you have spare capacity, running any of these in parallel with ours is pure insurance — they are
-the arms the paper's 400M tier depends on, and ours keep getting preempted. **Use a DIFFERENT
-`save_path` and wandb `name` if you run one concurrently with ours**, or the two jobs will fight over
-the same checkpoint directory.
+Parameters in millions; for the pair above the point is EQUALITY, not a maximum.
 
-| config | GPUs | our progress | s/step |
-|---|---|---|---|
-| `cmix_400M_hybrid_sparse.yml` | 8 | ~53,500/61,035 | 3.9 |
-| `abl_H_400M_6G6E_deep.yml` | 8 | ~23,300/61,035 | 1.7 |
-| `cmix_400M_sandwich_sparse.yml` | 8 | ~20,300/61,035 | 2.5 |
-| `abl_H_400M_6G6S_deep.yml` | 8 | ~18,600/61,035 | 1.5 |
+## Retiring arms, kept for reference
 
-`cmix_400M_hybrid_sparse` is the single highest-value one — it is the energy side of the headline
-comparison and the only 400M energy arm without a 32B number yet.
+| config | status |
+|---|---|
+| `abl_Y_400M_sandwich_rnorm_none.yml` | iso-TOTAL only: `layer_iterations [1,4,1]` = 6 block applications vs the hybrid's 12, so **ACTIVE -28.7%, FLOPwt -27.5%**. Any "sandwich loses to hybrid" read from it is confounded with a 28% compute deficit. Superseded by `bsaha_400M_sandwich_isoall.yml` |
+| `abl_H_400M_6G6E_deep.yml` | deep energy arm on `routing_norm: zscore`; superseded by our rnorm=none rerun. Keep as the zscore reference for that ablation |
+| `abl_H_400M_6G6S_deep.yml` | deep Switch baseline. **Weak baseline:** its MoE trunk is `intermediate_size: 290` per expert = 0.28x hidden, inside the narrow-expert band that has repeatedly failed here |
+| `abl_H_400M_6G6G_deep_isoactive.yml` | deep dense control, sized iso-ACTIVE with the energy arm |
+| `abl_G_400M_*`, `cmix_400M_*` | older arms, data path updated only |
+| `abl_C_134M_1G1x6E1G_isototal.yml` | **134M, not 400M, and it wants 4 GPUs, not 8** (mbs 4 / ga 4 -> 262,144 tok/step at 4 GPUs). At 8 it gives 64B, double budget |
 
----
+## Settings worth knowing before you change anything
 
-# THEN: SEEDS. This is the most valuable thing left, and nobody has done it.
-
-**Every margin in the paper except one is sub-1pp on a SINGLE seed.** That includes the claim the
-headline rests on (the FLOP-matched Switch leading the energy hybrid by 0.61pp at 134M) and the
-counter-claim (a plain dense GPT leading by 0.73pp). Neither is assertable without error bars, and
-this cuts against us and for us equally.
-
-**`seed` lives at `random_args.seed` and defaults to 42. It is NOT set in any of our configs**, so
-every arm to date is seed 42. To make a seed variant, add to any config:
-
-```yaml
-random_args:
-  seed: 1234        # or 7
-```
-
-…and give it a distinct `save_args.save_path` and `logging_args.wandb_args.name` (append `_s1234`).
-
-**Priority order** — 2 extra seeds of these two 134M arms answers the headline question. ~5.3 h each
-on 4 GPUs, so ~21 GPU-hours per seed-pair:
-
-1. `configs/iclr_26/scaling/cmix_134M_hybrid_32B_sparse.yml` — the energy hybrid (44.82)
-2. `configs/iclr_26/scaling/abl_B_134M_6G1x6S.yml` — the FLOP-matched Switch (45.43)
-
-If there is room for a third, `abl_E_134M_6G1x6E_baseEGPT` (45.87) — it is the arm that currently
-looks like it beats the hybrid, and it is the one comparison with no confound, so an error bar on it
-matters.
+- **`routing_norm: none`** is our largest knob: at 134M +1.49pp Avg11 on the block-position variant,
+  +0.10pp on the hybrid, it collapses a 1.37pp block-placement penalty to 0.02pp, does NOT collapse
+  routing (least-used expert 0.26% -> 5.1%, effK 13.79 -> 15.83 of 16), and is ~24% faster. It IS
+  worse on train loss (+0.047 nats) — for this knob loss has been the wrong signal three times, so
+  **select on Avg11, not loss**.
+- **`mbs 4 / ga 4`, not `2 / 8`.** Same tokens/step, but tokens/call goes to 16,384 where
+  `sparse_forward` wins 2.1-2.4x; below ~16,384 it LOSES (0.41-0.49x). Measured 6.397 -> 3.783 s/step.
+- **`repulsion_space: output` + `repulsion_subsample: 64`** if you go multi-node.
+  `repulsion_space: weight` wedges silently on >1 node (zero NCCL errors, zero steps).
+- **`fused_experts: true` must stay on.** It is not an optional speed knob: `sparse_forward` and
+  `proxy_rank > 0` both assert on it, and with it off the proxy router silently never trains.
+- **`stage: 0`** — no FSDP sharding, pure DDP replication, correct at this scale.
+- **`intermediate_size` is TOTAL across experts for the energy blocks but PER-EXPERT for
+  `mlp_type: MoE`.** That asymmetry has cost a run here.

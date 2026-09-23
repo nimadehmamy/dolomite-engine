@@ -401,8 +401,29 @@
 > the tau sweep gave the wrong answer and had to be retracted.
 >
 > Acceleration work: `ACCEL_FINDINGS_20260915.md`. `fused_experts` is EXACT (1.227e-15)
-> and 1.61x at **4 GPU / 1 node**, but it **WEDGES at 16 GPU / 2 nodes** and is
-> reverted on the live arm — validated single-node only.
+> and 1.61x at 4 GPU / 1 node.
+>
+> **CORRECTED 2026-09-23 — `fused_experts` is NOT single-node-only.** ACCEL_FINDINGS' "WEDGES at
+> 16 GPU / 2 nodes ... validated single-node only" was superseded by HANDOFF §13.3, which measured
+> `fused_experts` + `sparse_forward` + **output**-space repulsion running a 120-step 2-node probe at
+> 1.44 s/step. **The wedge is `fused_experts` + `repulsion_space: weight`**, because
+> `_add_repulsion_loss_weight` reshapes a dim-0-sharded DTensor BY EXPERT, which crosses shard
+> boundaries and issues an inter-node collective from inside a dynamo graph. It is silent: zero NCCL
+> errors, zero steps. So the rule is **`repulsion_space: output` + `repulsion_subsample: 64` for
+> anything multi-node**, and `fused_experts` stays on.
+>
+> Leaving the stale claim here had a cost: HANDOFF §19.9 cited it as the blocker for the 1B all-MoE
+> pair and recommended `fused_experts: false`, which would have forfeited the fusion speedup for no
+> reason. **`fused_experts: false` is not a free choice anyway** — `sparse_forward` asserts on it
+> ("sparse_forward is built on the fused-weight view"), and `proxy_rank > 0` asserts on it too
+> (the looped path never runs the proxy, so the proxy would silently never be trained). Turning
+> fusion off turns the entire sparsity mechanism off.
+>
+> **Multi-node is also ~50% flaky at STARTUP**, separately: a LOUD `ncclRemoteError` at the first
+> collective, before training. And this cluster's InfiniBand fails the first inter-node RDMA
+> (`IBV_WC_RETRY_EXC_ERR` across 6+ HCAs, 7+ peers, 4 host pairs), so `submit_train.sh` exports
+> `NCCL_IB_DISABLE=1` for every multi-node job — inter-node traffic goes over TCP. Arms launched
+> without it sat dead at step 0. Do not hand-roll a multi-node bsub.
 
 > ## ⚡ TRUE SPARSITY — measured 2026-09-16. Read before quoting any sparsity or FLOPs number.
 >

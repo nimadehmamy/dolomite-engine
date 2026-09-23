@@ -1,28 +1,31 @@
-# ABLATION H baseline -- the learned-gate twin of abl_H_400M_6G6E_deep.
-# 6 GPT + 6 DISTINCT Switch-MoE blocks, no recurrence. I_s = 290 (K=32, k=2) -> total 399.861M,
-# active 239.502M, FLOPwt 239.502M: within 0.002% / 0.62% / 0.62% of the energy twin.
-# Energy-free throughout, same convention as the other Switch baselines.
-# *** INTENDED GPU COUNT: 8 ***  mbs 2 x ga 8 x 4096 x 8 = 524,288 tok/step; 61,035 steps = 32.0B
+# RETIRING: 400M deep Switch baseline (zscore). NOTE its MoE trunk sits at
+# intermediate_size 290 per expert = 0.28x hidden, inside the narrow-expert band this project has
+# repeatedly found fails, so treat it as a weak baseline rather than a fair one.
+#
+# Data path updated to the shared FULL corpus copy (validated 2026-09-23); the original named
+# /proj/datasets/granite-4-datasets-megatron-merged, which the owners may delete at any time.
+# CHANGE save_path and the wandb name if you do not want to write into our results tree.
+#
 datasets:
 - class_name: MegatronDataset
   data_name: Megatron
   data_sampling_ratio: 1
   class_args:
     eval_steps: 2
-    data_cache_path: /proj/dmfexp/nima/.cache/megatron_cmix
+    data_cache_path: /proj/dmfexp/datasets-shared/.cache_megatron_cmix_FULL
     data_path:
     - 0.35
-    - /proj/datasets/granite-4-datasets-megatron-merged/web-nemotron-cc-hq-p2_0
+    - /proj/dmfexp/datasets-shared/granite-4-cmix-FULL/web-nemotron-cc-hq-p2_0
     - 0.35
-    - /proj/datasets/granite-4-datasets-megatron-merged/web-nemotron-cc-hq-p2_1
+    - /proj/dmfexp/datasets-shared/granite-4-cmix-FULL/web-nemotron-cc-hq-p2_1
     - 0.15
-    - /proj/datasets/granite-4-datasets-megatron-merged/megamath-web-pro_0
+    - /proj/dmfexp/datasets-shared/granite-4-cmix-FULL/megamath-web-pro_0
     - 0.15
-    - /proj/datasets/granite-4-datasets-megatron-merged/finemath-3plus-rewritten_0
+    - /proj/dmfexp/datasets-shared/granite-4-cmix-FULL/finemath-3plus-rewritten_0
     split: 99,0.5,0.5
     sequence_length: 4096
 tokenizer_args:
-  tokenizer_name: /proj/datasets/tokenizers/granite-4.0-tiktoken
+  tokenizer_name: /proj/dmfexp/datasets-shared/granite-4-cmix-FULL/tokenizers/granite-4.0-tiktoken
 model_args:
   model_class: AutoModelForCausalLM
   pretrained_config:

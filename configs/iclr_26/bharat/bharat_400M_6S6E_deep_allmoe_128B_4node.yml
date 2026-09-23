@@ -1,9 +1,74 @@
-# RETIRING: 400M deep energy arm on routing_norm=zscore. Superseded by our
-# abl_AB_400M_6G6E_deep_rnormnone. Kept as the zscore reference point for the rnorm ablation.
+# 400M-CLASS DEEP ALL-MoE (6S6E), 128B TOKENS, 4 NODES x 8 GPUS = 32 GPUS.
+# For Bharat.  Derived from our abl_AC_6S6E_deep_allmoe_isoactive, retimed for 128B at 32 GPUs.
 #
-# Data path updated to the shared FULL corpus copy (validated 2026-09-23); the original named
-# /proj/datasets/granite-4-datasets-megatron-merged, which the owners may delete at any time.
-# CHANGE save_path and the wandb name if you do not want to write into our results tree.
+# LAUNCH (the submitter encodes the node shape; do NOT hand-roll the bsub):
+#   cd /proj/dmfexp/nima/Code/dolomite-engine
+#   bash experiments/boltzmann-moe/scripts/bsub/submit_train.sh bharat_6S6E_128B \
+#        configs/iclr_26/bharat/bharat_400M_6S6E_deep_allmoe_128B_4node.yml 32 preemptable 24:00 400G
+# 32 is turned into `-n 4 -gpu num=8/task -R span[ptile=1]` + blaunch automatically.
+# `-gpu "num=32/task" -n 1` would ask for 32 GPUs on ONE host and PEND forever; hosts here have 8.
+#
+# ARCHITECTURE: 12 distinct layers, NO recurrence.  6 standard sparse-MoE blocks (K=8, top-4,
+# intermediate_size 1024 PER EXPERT, I_S/hidden = 1.00), then 6 distinct energy Boltzmann-MoE blocks
+# (K=32, top-2, intermediate_size 187872 TOTAL across experts, I_e=878).  Note the asymmetry:
+# `intermediate_size` is PER-EXPERT for `mlp_type: MoE` and TOTAL across experts for the energy
+# blocks.  That has cost a run before.
+#
+# PARAMETERS (energy_ff_paramcount.audit_config, millions).  Matched to our 6G6E dense-trunk arm on
+# ACTIVE and FLOPwt, deliberately NOT on TOTAL:
+#     6G6E (dense trunk)  TOTAL 399.85  ACTIVE 238.02  FLOPwt 238.02
+#     THIS ARM            TOTAL 475.40  ACTIVE 238.07  FLOPwt 238.07
+# No sizing can match all three: a dense block has active == total, a top-k MoE block has
+# active == (k/K)*total, so converting the trunk at fixed total must lose active.  Swept
+# K_S x k_S x I_S; every iso-total sizing loses >= 15.8% ACTIVE and every iso-active sizing costs
+# >= 1.19x TOTAL, with no overlap.  Since neither arm uses recurrence, FLOPwt == ACTIVE identically.
+#
+# TOKEN BUDGET: 122070 steps x 1,048,576 tok/step = 128.0B.
+#   tokens/step = GPUS x mbs x ga x seq = 32 x 4 x 2 x 4096.  GPUS IS NOT IN THIS FILE.
+#   AT 8 GPUS THIS FILE GIVES A QUARTER OF THE BUDGET.  Launch at exactly 32.
+#   tokens/call = mbs x seq = 16,384, which is the column where our sparse_forward wins 2.1-2.4x;
+#   below ~16,384 it LOSES (0.41-0.49x), so do not lower mbs without raising seq.
+#
+# MULTI-NODE: SAFE, and here is the evidence rather than an assurance.
+#   * `repulsion_space: output` + `repulsion_subsample: 64` is the multi-node-safe repulsion.
+#     `repulsion_space: weight` WEDGES on >1 node -- silently, with zero NCCL errors -- because
+#     regrouping a dim-0-sharded weight BY EXPERT crosses shard boundaries and makes DTensor issue
+#     an inter-node collective from inside a dynamo graph.  Do not switch it.
+#   * `fused_experts: true` is fine multi-node.  It was once recorded as single-node-only; that was
+#     wrong, and the correction is measured: fused + sparse_forward + output-space repulsion ran a
+#     120-step 2-node probe at 1.44 s/step.  Only the weight-space combination wedges.
+#   * `stage: 0` -- no FSDP sharding, pure DDP replication.  Correct at this scale, and it also
+#     sidesteps the DTensor sharding that causes the weight-space wedge.
+#   * The submitter exports NCCL_IB_DISABLE=1 for any multi-node job, because this cluster's
+#     InfiniBand fails the first inter-node RDMA (IBV_WC_RETRY_EXC_ERR across 6+ HCAs, 7+ peers,
+#     4 host pairs) and NCCL_IB_TIMEOUT/RETRY_CNT do not fix it.  Inter-node traffic therefore goes
+#     over TCP.  Do not launch multi-node without that variable: arms submitted without it sat dead
+#     at step 0.
+#   * Multi-node is ~50% flaky AT STARTUP with a LOUD `ncclRemoteError` at the first collective,
+#     before any training.  If that happens, just resubmit; it is not this config.  Distinguish it
+#     from the silent weight-space wedge, which shows zero NCCL errors and zero steps.
+#
+# SPEED EXPECTATION, and the one lever if it disappoints.  Our 6G6E arm at the same FLOPwt runs
+# 1.736 s/step at 8 GPUs with 65,536 tokens/rank.  This file puts 32,768 tokens/rank, so compute
+# should be ~0.9 s/step, plus one full-gradient all-reduce per step over TCP (stage 0 replicates, so
+# the whole ~475M gradient is reduced).  Expect roughly 1.2-1.7 s/step, i.e. 41-58 h for 128B.
+# If comms dominate, raise ga to amortise the all-reduce over more compute: mbs 4 / ga 4 at 32 GPUs
+# gives 2,097,152 tok/step, so use num_training_steps 61035 and num_decay_steps 59035 to keep 128B.
+# Do NOT trust a single multi-node s/step reading: the same config has measured 2.45-6.81 s/step
+# across host placements, a 2.7x spread from placement alone.
+#
+# DATA: /proj/dmfexp/datasets-shared/granite-4-cmix-FULL -- an independent full-corpus copy,
+# 570.7B tokens, validated 2026-09-23, readable by POSIX group proj_dmfexp.  128B is 0.22 epochs of
+# the blend overall, but megamath-web-pro_0 has only 13.0B tokens in existence and gets 0.15 x 128B
+# = 19.2B, so it is read ~1.48 times.  That is a known, accepted property of this mixture at 128B,
+# not a bug -- but it does mean "no arm revisits a document" is false for this run.
+# SANITY CHECK ON LAUNCH: the trainer logs `Tokens per epoch:` per shard.  The two web shards must
+# report ~265-266e9.  ~50e9 means you are on the biased 18.6%-prefix subset, whose loss is ~0.47
+# nats easier and cannot be compared with anything in our tables.
+#
+# CHANGE save_path and the wandb `name` below before launching if you do not want to write into our
+# results tree.  save_interval is 2000 here (not our 200) because saves were ~88% of wall time at
+# 400M under GPFS contention.
 #
 datasets:
 - class_name: MegatronDataset
@@ -122,29 +187,59 @@ model_args:
       add_bias: false
       attention_multiplier: 0.125
     mlp_blocks:
-    - mlp_type: MLP
+    - mlp_type: MoE
+      intermediate_size: 1024
+      num_experts: 8
+      num_experts_per_tok: 4
       activation_function: swiglu
-      intermediate_size: 4096
+      normalized_topk: true
+      shared_expert_gating: false
+      use_interleaved_weights: false
       add_bias: false
-    - mlp_type: MLP
+    - mlp_type: MoE
+      intermediate_size: 1024
+      num_experts: 8
+      num_experts_per_tok: 4
       activation_function: swiglu
-      intermediate_size: 4096
+      normalized_topk: true
+      shared_expert_gating: false
+      use_interleaved_weights: false
       add_bias: false
-    - mlp_type: MLP
+    - mlp_type: MoE
+      intermediate_size: 1024
+      num_experts: 8
+      num_experts_per_tok: 4
       activation_function: swiglu
-      intermediate_size: 4096
+      normalized_topk: true
+      shared_expert_gating: false
+      use_interleaved_weights: false
       add_bias: false
-    - mlp_type: MLP
+    - mlp_type: MoE
+      intermediate_size: 1024
+      num_experts: 8
+      num_experts_per_tok: 4
       activation_function: swiglu
-      intermediate_size: 4096
+      normalized_topk: true
+      shared_expert_gating: false
+      use_interleaved_weights: false
       add_bias: false
-    - mlp_type: MLP
+    - mlp_type: MoE
+      intermediate_size: 1024
+      num_experts: 8
+      num_experts_per_tok: 4
       activation_function: swiglu
-      intermediate_size: 4096
+      normalized_topk: true
+      shared_expert_gating: false
+      use_interleaved_weights: false
       add_bias: false
-    - mlp_type: MLP
+    - mlp_type: MoE
+      intermediate_size: 1024
+      num_experts: 8
+      num_experts_per_tok: 4
       activation_function: swiglu
-      intermediate_size: 4096
+      normalized_topk: true
+      shared_expert_gating: false
+      use_interleaved_weights: false
       add_bias: false
     - mlp_type: EnergyFF_BoltzmannMoE
       expert_kind: hopfield
@@ -152,7 +247,7 @@ model_args:
       n_experts: 32
       top_k: 2
       hopfield_grad_scale: sqrt_consistent
-      routing_norm: zscore
+      routing_norm: none
       temperature: 1.0
       repulsion_form: abs
       repulsion_coef: 0.1
@@ -186,7 +281,7 @@ model_args:
       n_experts: 32
       top_k: 2
       hopfield_grad_scale: sqrt_consistent
-      routing_norm: zscore
+      routing_norm: none
       temperature: 1.0
       repulsion_form: abs
       repulsion_coef: 0.1
@@ -220,7 +315,7 @@ model_args:
       n_experts: 32
       top_k: 2
       hopfield_grad_scale: sqrt_consistent
-      routing_norm: zscore
+      routing_norm: none
       temperature: 1.0
       repulsion_form: abs
       repulsion_coef: 0.1
@@ -254,7 +349,7 @@ model_args:
       n_experts: 32
       top_k: 2
       hopfield_grad_scale: sqrt_consistent
-      routing_norm: zscore
+      routing_norm: none
       temperature: 1.0
       repulsion_form: abs
       repulsion_coef: 0.1
@@ -288,7 +383,7 @@ model_args:
       n_experts: 32
       top_k: 2
       hopfield_grad_scale: sqrt_consistent
-      routing_norm: zscore
+      routing_norm: none
       temperature: 1.0
       repulsion_form: abs
       repulsion_coef: 0.1
@@ -322,7 +417,7 @@ model_args:
       n_experts: 32
       top_k: 2
       hopfield_grad_scale: sqrt_consistent
-      routing_norm: zscore
+      routing_norm: none
       temperature: 1.0
       repulsion_form: abs
       repulsion_coef: 0.1
@@ -353,20 +448,20 @@ model_args:
 tuning_args:
   tuning_method: pretraining
 save_args:
-  save_path: /proj/dmfexp/nima/Code/dolomite-engine/experiments/boltzmann-moe/results/iclr26_abl/abl_H_400M_6G6E_deep
-  save_interval: 200
+  save_path: /proj/dmfexp/nima/Code/dolomite-engine/experiments/boltzmann-moe/results/bharat/bharat_400M_6S6E_deep_allmoe_128B
+  save_interval: 2000
   max_to_keep: 2
 logging_args:
   log_interval: 10
   experiments_tracker_name: wandb
   wandb_args:
     project: energy-inference-large
-    name: abl_H_400M_6G6E_deep
+    name: bharat_400M_6S6E_deep_allmoe_128B
 training_parameters:
-  num_training_steps: 61035
+  num_training_steps: 122070
   eval_interval: 5000
-  micro_batch_size: 2
-  gradient_accumulation_steps: 8
+  micro_batch_size: 4
+  gradient_accumulation_steps: 2
   eval_during_training: false
   gradient_clipping: 1
 optimizer_args:
@@ -383,7 +478,7 @@ lr_scheduler_args:
   lr_decay_factor: 0.1
   num_warmup_steps: 2000
   num_constant_steps: 0
-  num_decay_steps: 59035
+  num_decay_steps: 120070
 mixed_precision_args:
   dtype: bf16
 distributed_args:
