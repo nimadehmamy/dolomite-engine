@@ -687,6 +687,50 @@
 > at **94% full**. Keep 2, plus landmark checkpoints deliberately preserved for iso-token
 > re-evaluation.
 
+> ## 📋 REGENERATING THE PAPER TABLES — ONE COMMAND, NEVER BY HAND
+>
+> ```bash
+> bash experiments/boltzmann-moe/scripts/refresh_paper_tables.sh   # regenerates BOTH, verifies, diffs
+> ```
+> It does not commit. Full procedure with every guard: **`.claude/agents/table-updater.md`** (a
+> registered agent, so `Agent(subagent_type="table-updater")` also works). Background in HANDOFF
+> §18.13 and §24.3.
+>
+> | table | label | file | generator |
+> |---|---|---|---|
+> | Table 1 | `tab:main` | `sec/experiments.tex` | `scripts/gen_table1.py --latex` |
+> | Table 6 | `tab:status` | `sec/appendix.tex` | `scripts/gen_status_table.py --latex` |
+>
+> **Four things that have gone wrong, all of them silently:**
+> 1. **Splice with `scripts/splice_generated_table.py`, never by hand.** An early hand-edit deleted
+>    the `\resizebox` line above the marker (unmatched `}`), and the first version of the splice
+>    script deleted the `\caption` and `\label`, which sit AFTER the tabular. Braces still balanced
+>    and environments still matched, so every check passed. Only a diff caught it. `pdflatex` cannot
+>    run here, so LaTeX breakage only surfaces on Overleaf.
+> 2. **`git pull` the Overleaf clone FIRST**, every time; the user and other agents edit concurrently.
+> 3. **Chain the compile and the push with `&&`, never `;`.** A broken paper was pushed 2026-09-23
+>    because `;` let the push run despite `rc=1`.
+> 4. **`gen_table1.GROUPS` keys on the `save_path` BASENAME, not the LSF job name.** A row was
+>    silently dropped when they differed (§24.3).
+>
+> **TABLE 1 IS GROUPED BY SCALE, THEN BY RECURRENCE (2026-09-23, Overleaf `a7af6d0`).** A bold scale
+> header (134M / 400M / 1B) with indented `Recurrent` / `No recurrence` sub-headers, each stating its
+> ACTIVE and FLOPwt. **The split is structural, not cosmetic: a no-recurrence arm has
+> `FLOPwt == ACTIVE` IDENTICALLY** (every block applied once), so it can never sit at the recurrent
+> group's 220M/300M budget. Before the split the 400M tier alone spanned FLOPwt 217-325M with no two
+> rows iso-compute. **Never read a no-rec row against a recurrent row as iso-compute.** Bolding is
+> within a subgroup only. House target for 400M: ACTIVE ~220M, FLOPwt ~300M.
+>
+> **Dense baselines live in Table 6, not Table 1** (user decision 2026-09-23), as do
+> `abl_U_134M_sandwich_rnorm_none` (block-POSITION variant 5G1x6E1G, not a sandwich) and
+> `cmix_400M_sandwich_sparse` (6 apps, so ACTIVE -29% / FLOPwt -27%, off-budget).
+>
+> **`compute_avg11.py` had a bug worth knowing about (fixed 2026-09-23).** Its glob is RECURSIVE, so
+> the `gsm8k/harness_results_*.json` written by the separate later GSM8K pass won every tie and the
+> tool printed `INCOMPLETE (0/11)` for arms whose data was complete — 4 dirs, including a Table 1 row.
+> The table generators were never affected (they glob NON-recursively and merge gsm8k explicitly), so
+> no published cell was ever wrong; the damage was to hand verification.
+>
 > ## 🔢 LABEL EVERY TABLE — STATE WHAT THE NUMBERS ARE, IMMEDIATELY BEFORE THE TABLE
 >
 > **THIS IS VERY IMPORTANT.** Never present a table of numbers without saying, in the sentence
