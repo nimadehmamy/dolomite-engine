@@ -217,8 +217,14 @@ distributed_args:
   stage: 0
 load_args:
   load_path: /proj/dmfexp/nima/Code/dolomite-engine/experiments/boltzmann-moe/results/cmix/abl_X_400M_hyb_rnorm_none
-  # MUST be false at a CHANGED GPU COUNT. rng_state is saved one file per global rank
-  # (checkpointing/__init__.py:569, rng_state-<rank>.pt) and the checkpoint holds exactly 8.
-  # At 16 ranks, ranks 8-15 would torch.load a path that does not exist and line 411 has NO
-  # guard -- FileNotFoundError, half the ranks dead at startup.
+  # MUST be false at a CHANGED GPU COUNT. Both rng_state and lr_scheduler are saved
+  # as one file per global rank (rng_state-<rank>.pt, lr_scheduler-<rank>.pt).
+  # The checkpoint holds exactly 8 of each. At 16 ranks, ranks 8-15 hit
+  # FileNotFoundError on the missing files. Model + optimizer use DCP (reshards
+  # automatically); only these two use per-rank .pt files.
   load_rng_state: false
+  # THE FIX: lr_scheduler has the same per-rank file problem as rng_state.
+  # Ranks 8-15 crash on lr_scheduler-{8..15}.pt which don't exist.
+  # resume_learning_rate (default True) rebuilds the cosine schedule from the
+  # step number, which is exact for our schedule and does not need per-rank files.
+  load_lr_scheduler: false
