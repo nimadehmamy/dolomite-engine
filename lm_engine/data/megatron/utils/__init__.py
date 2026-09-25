@@ -40,6 +40,14 @@ else:
 def compile_helpers() -> None:
     """Compile C++ helper functions at runtime. Make sure this is invoked on a single process."""
 
+    # FAST PATH: if helpers.so already exists on disk, skip the ninja call entirely.
+    # ninja's no-op stat check hangs for 10-30 min on a loaded parallel filesystem,
+    # blocking all ranks at the barrier until the gloo 1800s timeout crashes them.
+    # Measured 2026-09-24: 4 jobs stuck for 14 min each on a .so built months ago.
+    if os.path.isfile(_so_path):
+        log_rank_0(logging.INFO, f"helpers.so exists at {_so_path} — skipping ninja rebuild")
+        return
+
     log_rank_0(logging.INFO, "compiling helpers.cpp")
 
     build_directory = os.path.join(os.path.dirname(__file__), "build")

@@ -198,7 +198,7 @@ if [ "${nnodes:-1}" -gt 1 ]; then
         fi
     fi
 fi
-[ -n "${NCCL_DEBUG_OVERRIDE:-}" ] && export NCCL_DEBUG="${NCCL_DEBUG_OVERRIDE}"
+[ -n "${NCCL_DEBUG_OVERRIDE:-}" ] && export NCCL_DEBUG="${NCCL_DEBUG_OVERRIDE:-}"
 CFG="${CFG}"
 SP="${SP}"
 if [ -n "\$SP" ] && [ -f "\$SP/latest_checkpointed_iteration.json" ]; then

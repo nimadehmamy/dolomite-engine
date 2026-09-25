@@ -1,0 +1,240 @@
+#!/usr/bin/env python3
+"""One table of EVERY arm: architecture, parameter budget, training state, benchmark results.
+
+Generated, never hand-assembled (CLAUDE.md: a dropped cell once reported wiki-ppl as a GSM8K
+score). Emits a text table and a LaTeX longtable for the ICLR appendix.
+
+Usage: python scripts/gen_status_table.py [--latex]
+"""
+import yaml, json, glob, os, re, subprocess, statistics, sys, argparse
+
+REPO = '/proj/dmfexp/nima/Code/dolomite-engine'
+L = '/u/ndehmamy/bsub_logs'
+ACC_NORM = ['arc_challenge','arc_easy','hellaswag','openbookqa','piqa','sciq']
+ACC = ['boolq','copa','winogrande','race','lambada_openai']
+
+# arm -> (short label, role). ROLE marks what each arm is FOR.
+ROLES = {
+ 'cmix_134M_hybrid_32B_sparse':        ('134M hybrid',            'main'),
+ 'cmix_134M_sandwich_32B_sparse':      ('134M block-pos variant', 'main'),
+ 'cmix_134M_pure_32B_sparse':          ('134M pure recurrent',    'main'),
+ 'cmix_134M_gptswitch_32B':            ('134M Switch (unmatched)','baseline'),
+ 'abl_B_134M_6G1x6S':                  ('134M Switch (FLOP-matched)','ABLATION B'),
+ 'cmix_134M_hyb_w1w2_surrMLP_32B':     ('134M w1w2', 'ABLATION: expert form'),
+ 'cmix_134M_hyb_w1w2_sparse_surr_32B': ('134M w1w2','ABLATION: expert form + router'),
+ 'cmix_400M_hybrid_sparse':            ('400M hybrid',            'main'),
+ 'cmix_400M_sandwich_sparse':          ('400M sandwich',          'main'),
+ 'cmix_400M_baseline_switch':          ('400M Switch (unmatched)','baseline'),
+ 'abl_B_400M_6G1x6S':                  ('400M Switch (FLOP-matched)','ABLATION B'),
+ # added 2026-09-23 when Table 1 was split by recurrence -- these must stay visible somewhere
+ 'abl_AA_134M_sandwich_isoall':        ('134M true sandwich, iso-ALL','ABLATION AA'),
+ 'abl_X_400M_hyb_rnorm_none':          ('400M hybrid, rnorm=none','main'),
+ 'abl_AD_400M_sandwich_isoall':        ('400M true sandwich, iso-ALL','ABLATION AD'),
+ 'abl_AB_400M_6G6E_deep_rnormnone':    ('400M deep 6G6E, rnorm=none','ABLATION AB'),
+ 'abl_AC_6S6E_deep_allmoe_isoactive':  ('400M deep 6S6E all-MoE','ABLATION AC'),
+ 'abl_AE_400M_6G1x6E_baseEGPT':        ('400M base EGPT, iso-active+flop','ABLATION AE'),
+ 'cmix1B_12L_gptDense_32B':            ('1B stacked 8G4E',        'scale'),
+ 'abl_C_134M_1G1x6E1G_isototal':       ('134M true sandwich, iso-total','ABLATION C'),
+ 'abl_D_134M_6G_dense_isototal':       ('134M GPT-only dense, iso-total','ABLATION D'),
+ 'abl_E_134M_6G1x6E_baseEGPT':         ('134M base EGPT, iso-active','ABLATION E'),
+ 'abl_F_134M_6G_dense_isoactive':      ('134M GPT-only, iso-active','ABLATION F'),
+ 'abl_I_134M_w1w2_sparse_surr_projUncon': ('134M w1w2, unconstrained proj','ABLATION I'),
+ 'abl_R_134M_hyb_rnorm_none':           ('134M hybrid, routing\\_norm=none','ABLATION R'),
+    # 2026-09-23: routing_norm=none on the BLOCK-POSITION variant. Its parent scored 43.45 with
+    # zscore, so this arm's +1.49pp is where the knob actually matters -- on the hybrid it was only
+    # +0.10pp. Together they collapse the 1.37pp placement gap to 0.02pp (HANDOFF 24.1).
+    'abl_U_134M_sandwich_rnorm_none':      ('134M block-pos, routing\\_norm=none','ABLATION U'),
+    'abl_V_134M_223_h768_isototal':        ('134M [2,2,3] h768, iso-total','ABLATION V'),
+    'abl_W_pure5x7_deep_isocompute':       ('134M pure deep 5x7, iso-compute','ABLATION W'),
+ 'abl_G_400M_6G1x6E1x6E':              ('400M two recurrent energy blocks','ABLATION G'),
+ 'abl_G_400M_6G1x6S1x6S':              ('400M two recurrent Switch blocks','ABLATION G'),
+ 'abl_H_400M_6G6E_deep':               ('400M deep energy, no recurrence','ABLATION H'),
+ 'abl_H_400M_6G6S_deep':               ('400M deep Switch, no recurrence','ABLATION H'),
+ 'abl_H_400M_6G6G_deep_isoactive':     ('400M 12G dense, iso-active','ABLATION H'),
+}
+
+# WHICH SPARSE MECHANISM -- DERIVED FROM THE CONFIG, NEVER HAND-LABELLED (2026-09-20).
+# The paper had been writing "sparse" unqualified, which conflates two different contributions:
+#   sparse(proxy)     the router's weight matrices are replaced by a rank-r subspace projection
+#                     with a small output dim, so selection costs O(K d r) not O(K d I_e).
+#                     hopfield ONLY -- for w1w2 the bilinear energy's terms cancel
+#                     (|sum|/sum|term| = 0.0254 vs 1.000), so an m-row subsample needs m = I_e,
+#                     where it costs MORE than the mixture it exists to cheapen.
+#   sparse(surrogate) a small MLP head is KL-distilled to reproduce the RANKING of the exact
+#                     energies and nominates p >= k candidates; the exact energy re-ranks to k.
+#                     Works for both expert kinds, and is the only option for w1w2.
+# Derived rather than typed because every hopfield arm happens to be proxy and every w1w2 arm
+# surrogate -- so a hand-written label would silently encode that confound as if it were a choice.
+def sparse_mech(pc):
+    blocks = pc.get('mlp_blocks') or []
+    for b in blocks:
+        t = b.get('mlp_type')
+        if t == 'MoE':
+            return 'learned gate'
+        if t and str(t).startswith('EnergyFF_') and ('BoltzmannMoE' in t):
+            if b.get('sparse_forward'):
+                return 'sparse(surrogate)' if b.get('surrogate_replaces_proxy') else 'sparse(proxy)'
+            # dense: all K experts evaluated per token. If the head supplies the ROUTING WEIGHTS
+            # (use_surrogate) that is a different thing again -- say so rather than just "dense".
+            return 'dense, surrogate router' if b.get('use_surrogate') else 'dense'
+        if t == 'EnergyFF_Hopfield' or t == 'EnergyFF_W1W2':
+            return 'no MoE'
+    return None
+
+def cfgpath(a):
+    for p in (f'{REPO}/configs/cmix/{a}.yml',):
+        if os.path.exists(p): return p
+    g = glob.glob(f'{REPO}/configs/iclr_26/**/{a}.yml', recursive=True)
+    return g[0] if g else None
+
+def arch(pc):
+    li = pc.get('layer_iterations') or [1]*len(pc['mlp_blocks'])
+    toks=[]
+    for sm,m,it in zip(pc['sequence_mixer_blocks'],pc['mlp_blocks'],li):
+        t=m.get('mlp_type'); ch='E' if str(t).startswith('EnergyFF') else ('S' if t=='MoE' else 'G')
+        toks.append((ch,int(it)))
+    out=[];i=0
+    while i<len(toks):
+        ch,it=toks[i];n=1
+        while i+n<len(toks) and toks[i+n]==(ch,it): n+=1
+        out.append(f"{n}{ch}" if it==1 else f"{n}x{it}{ch}"); i+=n
+    return "".join(out)
+
+ABBREV = [("recurrence", "rec"), ("recurrent", "rec"),
+          ("surrogate", "surr"), ("unconstrained", "unc")]
+
+def shorten(label):
+    """Abbreviate the long words in column 1 so the table fits; defined in the caption.
+
+    Requested 2026-09-22. Applied to the LABEL only, never to the arch/expert columns, and done
+    here rather than by hand so it survives a regenerate. Longest-first so "recurrence" is not
+    mangled into "recent" by the "recurrent" rule.
+    """
+    for long, short in ABBREV:
+        label = label.replace(long, short)
+    return label
+
+def sched(y):
+    """'WSD' if there is a constant phase, else the decay style.
+
+    Added 2026-09-22 at the user's request, and it immediately mattered: the 400M tier MIXES
+    schedulers. Five arms run 2,000 warmup + 53,000 CONSTANT + 6,035 decay (WSD, decaying over the
+    last 10%); eighteen run 2,000 + 0 + full decay (pure cosine, decaying over 97%). Those give
+    different final-LR trajectories, so a loss gap measured ACROSS schedulers is not clean -- which
+    is exactly what the 400M recurrence comparison does.
+    """
+    ls = y.get('lr_scheduler_args') or {}
+    st = ls.get('lr_decay_style', '?')
+    return 'WSD' if (ls.get('num_constant_steps') or 0) > 0 else st
+
+def metrics(sp, tot=None, prefix='unsharded'):
+    """Newest COMPLETE result for the END-OF-RUN checkpoint, and ONLY that one.
+
+    2026-09-20: this used to glob `unsharded*`, which matches ANY step's unsharded directory. The
+    1B arm had a single stale eval under `unsharded_step4000` -- 4,000 x 524,288 = 2.10B tokens --
+    and this function happily reported it as the arm's result. It reached the paper as
+    "1B stacked 8G4E ... complete, Avg11 41.78, ppl 63.55" inside a table whose caption says every
+    arm trains on 32.0B tokens. The perplexity of 63.55 was the only hint, and it was read as the
+    architecture being weak rather than as 15x too few tokens.
+
+    So: when `tot` (the arm's num_training_steps) is known, accept results ONLY from
+    `unsharded_step{tot}` or a legacy plain `unsharded/`. A result from any other step is NOT this
+    arm's number -- return None so the row shows as unevaluated, which is true, instead of showing a
+    number that is wrong.
+    """
+    # `prefix` selects WHICH EXPORT of the arm to read. 2026-09-22 (HANDOFF §21): every
+    # `unsharded*` export was evaluated on the DENSE all-K path with exact ORACLE routing, because
+    # _sparse_active is never flipped outside the training loop. The `sparseeval*` twin holds the
+    # SAME weights (hard-linked) with sparse_start_step: 0, i.e. the PROXY-SPARSE path -- what the
+    # model actually delivers at its claimed FLOPs. Both are reported; neither is dropped.
+    pats = []
+    if tot is not None:
+        pats = [f'{sp}/{prefix}_step{tot}', f'{sp}/{prefix}']
+    else:
+        pats = [f'{sp}/{prefix}*']
+    cands = []
+    for d in pats:
+        cands = glob.glob(f'{d}/harness_results_merged_*.json') or \
+                glob.glob(f'{d}/harness_results_2*.json')
+        if cands: break
+    if not cands: return None
+    f = max(cands, key=os.path.getmtime)
+    r = json.load(open(f)).get('results',{})
+    def m(task,*keys):
+        d=r.get(task) or {}
+        for k in keys:
+            if k in d and d[k] is not None: return d[k]
+        for k in d:
+            if any(k.startswith(x) for x in keys): return d[k]
+        return None
+    vals=[m(t,'acc_norm,none','acc_norm') for t in ACC_NORM]+[m(t,'acc,none','acc') for t in ACC]
+    ok=[v for v in vals if isinstance(v,(int,float))]
+    return dict(avg11=100*sum(ok)/len(ok) if len(ok)==11 else None,
+                ppl=m('wikitext','word_perplexity,none','word_perplexity'),
+                mmlu=(lambda v: 100*v if isinstance(v,(int,float)) else None)(m('mmlu','acc,none','acc')),
+                gsm=(lambda v: 100*v if isinstance(v,(int,float)) else None)(m('gsm8k_cot','exact_match,flexible-extract')))
+
+rows=[]
+for a,(label,role) in ROLES.items():
+    p=cfgpath(a)
+    if not p: continue
+    c=yaml.safe_load(open(p)); pc=c['model_args']['pretrained_config']; tp=c['training_parameters']
+    sp=c['save_args']['save_path']; tot=tp['num_training_steps']
+    try: it=json.load(open(f'{sp}/latest_checkpointed_iteration.json'))['latest_checkpointed_iteration']
+    except Exception: it=0
+    st=subprocess.run(['bjobs','-noheader','-o','stat','-J',a],capture_output=True,text=True).stdout.split('\n')[0].strip()
+    state='complete' if it>=tot else (f'{100*it/tot:.0f}% ({st or "no job"})')
+    try:
+        sys.path.insert(0,REPO)
+        from lm_engine.hf_models.modeling_utils.mlp_blocks.energy_ff_paramcount import audit_config
+        au=audit_config(p); totp,act,fl=au.total/1e6,au.active/1e6,au.flop_weight/1e6
+    except Exception: totp=act=fl=None
+    eb=[m for m in pc['mlp_blocks'] if str(m.get('mlp_type','')).startswith('EnergyFF')]
+    sb=[m for m in pc['mlp_blocks'] if m.get('mlp_type')=='MoE']
+    # .get, not [] -- the non-MoE energy FFNs (EnergyFF_Hopfield / EnergyFF_W1W2, e.g.
+    # abl_E) have no n_experts/top_k at all, and indexing raised KeyError on them.
+    if eb:
+        kind,K,k=eb[0].get('expert_kind'),eb[0].get('n_experts'),eb[0].get('top_k')
+        # A non-MoE energy FFN carries no `expert_kind` -- the FORM is the mlp_type itself.
+        # Leaving kind=None crashed the text renderer's %s formatting.
+        if kind is None:
+            _t=str(eb[0].get('mlp_type',''))
+            kind='hopfield' if _t.endswith('Hopfield') else ('w1w2' if _t.endswith('W1W2') else '?')
+    elif sb: kind,K,k='swiglu',sb[0]['num_experts'],sb[0]['num_experts_per_tok']
+    else:   kind,K,k='dense',None,None
+    mt=metrics(sp, tot) or {}
+    # The proxy-sparse twin. Only meaningful for an arm that HAS a sparse router; a dense arm has
+    # no sparseeval export and correctly reports '--'.
+    ms=metrics(sp, tot, prefix='sparseeval') or {}
+    mt['avg11_sps']=ms.get('avg11'); mt['ppl_sps']=ms.get('ppl')
+    mt['mmlu_sps']=ms.get('mmlu');   mt['gsm_sps']=ms.get('gsm')
+    _m = sparse_mech(pc)
+    if _m:
+        label = f"{label}, {_m}"
+    rows.append(dict(arm=a,label=shorten(label),role=role,arch=arch(pc),kind=kind,K=K,k=k,
+                     tot=totp,act=act,fl=fl,state=state,sched=sched(c),**mt))
+
+ap=argparse.ArgumentParser(); ap.add_argument('--latex',action='store_true'); args=ap.parse_args()
+f=lambda v,p=2: '--' if v is None else f'{v:.{p}f}'
+if not args.latex:
+    print(f"{'label':30s} {'arch':12s} {'expert':9s} {'K':>3s} {'k':>2s} {'TOT':>7s} {'ACT':>7s} "
+          f"{'FLOPwt':>7s} {'sched':>7s} {'state':>14s} {'Avg11':>6s} {'A11sps':>6s} {'ppl':>7s} {'MMLU':>6s} {'GSM':>5s}  role")
+    for r in sorted(rows,key=lambda r:(r['role']!='main',r['label'])):
+        print(f"{r['label']:30s} {r['arch']:12s} {r['kind']:9s} {str(r['K'] or '-'):>3s} {str(r['k'] or '-'):>2s} "
+              f"{f(r['tot'],1):>7s} {f(r['act'],1):>7s} {f(r['fl'],1):>7s} {r.get('sched','?'):>7s} {r['state']:>14s} "
+              f"{f(r.get('avg11')):>6s} {f(r.get('avg11_sps')):>6s} {f(r.get('ppl')):>7s} {f(r.get('mmlu')):>6s} {f(r.get('gsm')):>5s}  {r['role']}")
+else:
+    print(r"% GENERATED by experiments/boltzmann-moe/scripts/gen_status_table.py --latex")
+    print(r"\begin{tabular}{llrrrrlrrrrrrr}")
+    print(r"\toprule")
+    print(r"Arm & Arch & $K$ & $k$ & Total & Active & Sched & Progress & Avg11$^{\mathrm{orc}}$ & Avg11$^{\mathrm{sps}}$ & ppl$^{\mathrm{orc}}$ & ppl$^{\mathrm{sps}}$ & MMLU & GSM8K \\")
+    print(r"\midrule")
+    last=None
+    for r in sorted(rows,key=lambda r:(r['role']!='main',r['label'])):
+        if r['role']!=last:
+            print(r"\midrule \multicolumn{14}{l}{\emph{" + r['role'].replace('_',' ') + r"}} \\")
+            last=r['role']
+        print(f"{r['label']} & \\texttt{{{r['arch']}}} & {r['K'] or '--'} & {r['k'] or '--'} & "
+              f"{f(r['tot'],0)}M & {f(r['act'],0)}M & {r.get('sched','?')} & {r['state'].replace('%',r'\%')} & "
+              f"{f(r.get('avg11'))} & {f(r.get('avg11_sps'))} & {f(r.get('ppl'))} & {f(r.get('ppl_sps'))} & {f(r.get('mmlu'))} & {f(r.get('gsm'))} \\\\")
+    print(r"\bottomrule"); print(r"\end{tabular}")

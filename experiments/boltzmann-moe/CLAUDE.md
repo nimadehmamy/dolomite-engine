@@ -1,5 +1,12 @@
 # Boltzmann MoE — Experiment Guide
 
+> ## 📁 CONFIGS GO IN `configs/iclr_26/` UNTIL THE DEADLINE (end of Sep 25, 2026)
+>
+> **User instruction, 2026-09-24.** All experiment configs — including FineWeb-Edu sweeps,
+> ablations, scaling runs — go into `configs/iclr_26/` (subdirectories are fine, e.g.
+> `configs/iclr_26/fwe_sweep/`). Do NOT create top-level config directories. This keeps
+> everything findable in one tree until the deadline passes.
+
 > ## 🗄 THE RESCUED DATASET COPY IS A BIASED PREFIX — never compare loss across copies
 >
 > **Measured 2026-09-22 (HANDOFF §23).** `/proj/dmfexp/datasets-shared/granite-4-cmix-subset/` holds

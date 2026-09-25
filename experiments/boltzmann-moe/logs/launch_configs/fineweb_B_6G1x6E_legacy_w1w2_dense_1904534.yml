@@ -1,0 +1,122 @@
+# ARM B: 6G + 1 EGPT x6, LEGACY code, W1W2 experts, DENSE (the old h1 recipe at d=768)
+# Uses BoltzmannMoE_Energy_MLP — the class that BEAT Switch in the h1 series.
+# K=4 full-size experts, I_e=2048 each, I_total=8192.
+# NO top-k, NO proxy, NO Sinkhorn, NO routing_norm. Pure softmax(E/tau) over all K.
+# total = active = 133.3M (dense: all experts contribute)
+# 1.5x Chinchilla (active): 4.0B tokens = 7629 steps @ 524288 tok/step
+#
+# PURPOSE: reproduce the h1 result on new data. If this beats A, the mechanism works.
+datasets:
+- class_name: MegatronDataset
+  data_name: Megatron
+  data_sampling_ratio: 1
+  class_args:
+    eval_steps: 2
+    data_cache_path: /proj/dmfexp/nima/.cache/megatron_fwe
+    data_path:
+    - 1.0
+    - /proj/datasets/archive/web_deduped/fineweb-edu/bluepile-processing_rel_11_tokens_s3_llmb_megatron_fineweb-edu_train_int_score=3_dump=CC-MAIN-2023-14-1-en
+    split: 99,0.5,0.5
+    sequence_length: 4096
+tokenizer_args:
+  tokenizer_name: /proj/datasets/tokenizers/granite-4.0-tiktoken
+model_args:
+  model_class: AutoModelForCausalLM
+  pretrained_config:
+    model_type: energy
+    num_iterations: 1
+    num_pre_layers: 0
+    num_post_layers: 0
+    layer_iterations:
+    - 1
+    - 1
+    - 1
+    - 1
+    - 1
+    - 1
+    - 6
+    initializer_range: 0.02
+    layer_norm_epsilon: 1.0e-05
+    normalization_function: rmsnorm
+    position_embedding_type: rope
+    rope_dim: 64
+    hidden_size: 768
+    num_layers: 7
+    init_method: normal
+    tie_word_embeddings: true
+    energy_proj_type: psd_anti
+    bos_token_id: 100257
+    eos_token_id: 100257
+    pad_token_id: 100256
+    vocab_size: 100352
+    max_position_embeddings: 4096
+    sequence_mixer_blocks:
+    - &gpt_attn {sequence_mixer_type: softmax_attention, num_attention_heads: 12, num_key_value_heads: 12, add_bias: false, attention_multiplier: 0.125}
+    - *gpt_attn
+    - *gpt_attn
+    - *gpt_attn
+    - *gpt_attn
+    - *gpt_attn
+    - sequence_mixer_type: energy_attention
+      num_attention_heads: 12
+      num_key_value_heads: 12
+      add_bias: false
+      attention_multiplier: 0.125
+    mlp_blocks:
+    - &gpt_ffn {mlp_type: MLP, activation_function: swiglu, intermediate_size: 2048, add_bias: false}
+    - *gpt_ffn
+    - *gpt_ffn
+    - *gpt_ffn
+    - *gpt_ffn
+    - *gpt_ffn
+    # THE KEY: legacy BoltzmannMoE_Energy_MLP, W1W2, DENSE
+    - mlp_type: BoltzmannMoE_Energy_MLP
+      intermediate_size: 8192    # total = 4 experts x 2048 each
+      n_experts: 4
+      temperature: 1.0
+      repulsion_coef: 0.1
+      repulsion_form: signed
+      n_repulsion_pairs: 4
+      gelu_grad_method: sigmoid
+      add_bias: false
+tuning_args:
+  tuning_method: pretraining
+save_args:
+  save_path: /proj/dmfexp/nima/Code/dolomite-engine/experiments/boltzmann-moe/results/fwe/fineweb_B_legacy_w1w2_dense
+  save_interval: 1000
+  max_to_keep: 2
+logging_args:
+  log_interval: 10
+  experiments_tracker_name: wandb
+  wandb_args:
+    project: boltzmann-moe-fwe
+    name: fineweb_B_6G1x6E_legacy_w1w2_dense
+training_parameters:
+  num_training_steps: 7629
+  eval_interval: 2000
+  micro_batch_size: 4
+  gradient_accumulation_steps: 8
+  eval_during_training: false
+  gradient_clipping: 1
+optimizer_args:
+  class_name: TorchAdamW
+  class_args:
+    lr: 2e-3
+    weight_decay: 0.1
+    betas:
+    - 0.9
+    - 0.95
+    eps: 1.0e-08
+lr_scheduler_args:
+  lr_decay_style: cosine
+  lr_decay_factor: 0.1
+  num_warmup_steps: 500
+  num_constant_steps: 6366
+  num_decay_steps: 763
+mixed_precision_args:
+  dtype: bf16
+distributed_args:
+  fsdp_algorithm: 2
+  gradient_checkpointing_method: block
+  torch_compile: true
+  stage: 0
