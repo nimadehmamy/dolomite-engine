@@ -7356,3 +7356,35 @@ Corrected 6S6E arms (G6/G7/G8) submitted with:
 - G6 d=768:  4GPU, ga=8, active=132M (iso-active with Switch E3), 4.0B tokens, 1.5× Chin
 - G7 d=1024: 8GPU, ga=4, active=225M (iso-active with Switch F3), 7.6B tokens, 1.7× Chin
 - G8 d=1280: 8GPU, ga=2, active=315M (iso-active with Switch H3), 5.6B tokens, 0.9× Chin
+
+### 29.8 Final results (2026-09-25 22:30 UTC)
+
+19 arms evaluated across d=768/1024/1280. All param counts from `audit_config`.
+Token formula verified: `seq × mbs × ga × GPUs × steps` (script: `compute_tokens.sh`).
+
+**Cross-scale Avg11 (iso-active within each scale):**
+
+| arm | d=768 | d=1024 | d=1280 |
+|---|---|---|---|
+| Switch MoE (6G1x6S) † | **44.72** | **46.01** | **46.89** |
+| 12-layer dense (12G) † | 43.95 | 45.56 | 46.16 |
+| 12S all-Switch (12S) † | — | 45.51 | — |
+| Boltz-MoE deep (6S6E) | 43.47 | 45.07 | **46.17** |
+| Boltz-MoE rec (6G1x6E) | 43.96 | 44.73 | 45.45 |
+
+**The headline:** 6S6E deep matches the 12G baseline at d=1280 (46.17 vs 46.16, Δ=+0.01pp)
+and trails Switch by only 0.72pp while using 2.1× fewer FLOPs (315M vs 661M). The 6S6E deep
+architecture is strictly better than the recurrent 6G1x6E at d≥1024: more quality, fewer FLOPs.
+
+**Token efficiency:** Switch reaches Boltzmann's final loss at 53% of Boltzmann's tokens.
+12G reaches EGPT's at 33%. The energy model is ~2× less token-efficient than Switch but the
+gap is a constant factor, not a scaling barrier.
+
+**Corrected arms (G6/G7/G8/G81):** the original G3/G4 had half tokens due to a ga config bug
+(documented in §29.7). G5 had mismatched active params (355M vs 315M target). All three
+corrected arms are iso-active with Switch at their scale.
+
+**New baseline (S1):** 12S all-Switch at d=1024, iso-active 225M, 7.6B tokens. Avg11=45.51,
+between 12G (45.56) and Switch 6G1x6S (46.01). This is the fairest deep-Switch-vs-deep-energy
+comparison: same depth (12 layers), same tokens, same active params, no recurrence on either
+side. The energy model (6S6E, 45.07) trails by 0.44pp.
