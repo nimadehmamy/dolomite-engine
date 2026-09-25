@@ -161,7 +161,20 @@ class _IndexReader:
             self.dtype_size = DType.size(self.dtype)
 
             self.sequence_count = struct.unpack("<Q", stream.read(8))[0]
-            self.document_count = struct.unpack("<Q", stream.read(8))[0]
+            _raw_doc_count = struct.unpack("<Q", stream.read(8))[0]
+            if version == 256:
+                # LLMB variant: field 5 is total_tokens, not document_count.
+                # In this format each sequence IS a document, so doc_count = seq_count.
+                # Compute the true doc count from the file size:
+                #   file = header(34) + sizes(N*4) + pointers((N+1)*8) + doc_indices(M*8)
+                #   M = (file_size - 34 - N*12 - 8) / 8
+                import os as _os
+                _fsize = _os.path.getsize(idx_path)
+                _data_after_ptrs = _fsize - 34 - self.sequence_count * 4 - (self.sequence_count + 1) * 8
+                self.document_count = _data_after_ptrs // 8
+                log_rank_0(logging.INFO, f"	LLMB format: seq_count={self.sequence_count}, doc_count={self.document_count} (field was total_tokens={_raw_doc_count})")
+            else:
+                self.document_count = _raw_doc_count
 
             offset = stream.tell()
 
