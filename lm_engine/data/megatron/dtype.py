@@ -10,6 +10,7 @@ import numpy as np
 
 
 class DType(Enum):
+    int32_legacy = 0  # FineWeb-Edu .idx files use code 0 for int32
     uint8 = 1
     int8 = 2
     int16 = 3
@@ -25,7 +26,10 @@ class DType(Enum):
 
     @classmethod
     def dtype_from_code(cls, value: int) -> type[np.number]:
-        return getattr(np, cls(value).name)
+        member = cls(value)
+        # int32_legacy (code 0) maps to the same numpy type as int32
+        name = member.name.replace('_legacy', '')
+        return getattr(np, name)
 
     @staticmethod
     def size(key: int | type[np.number]) -> int:
