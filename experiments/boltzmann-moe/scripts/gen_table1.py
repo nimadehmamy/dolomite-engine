@@ -44,26 +44,26 @@ GROUPS = [
 # reserved for the appendix), and cmix_400M_sandwich_sparse (layer_iterations [1,4,1] = 6 apps, so
 # ACTIVE -29% and FLOPwt -27% against the hybrid; it is OFF this group's budget and is superseded by
 # abl_AD_400M_sandwich_isoall).
- ('134M -- recurrent (ACTIVE 123.2M, FLOPwt 141.7M)', [
+ ('134M|Recurrent (ACTIVE 123.2M, FLOPwt 141.7M)', [
    ('cmix_134M_hybrid_32B_sparse',         'Hybrid (energy MoE)',            False),
    ('abl_R_134M_hyb_rnorm_none',           r'Hybrid, routing\_norm=none',    False),
    ('cmix_134M_sandwich_32B_sparse',       'Block-pos 5G1x6E1G (energy MoE)', False),
    ('abl_AA_134M_sandwich_isoall',         'Sandwich 1G1x6E1G, iso-all',     False),
    ('abl_B_134M_6G1x6S',                   'Switch MoE, FLOP-matched',       True),
    ]),
- ('400M -- recurrent (ACTIVE 219.4M, FLOPwt 299.4M)', [
+ ('400M|Recurrent (ACTIVE 219.4M, FLOPwt 299.4M)', [
    ('cmix_400M_hybrid_sparse',             'Hybrid (energy MoE)',            False),
    ('abl_X_400M_hyb_rnorm_none',           r'Hybrid, routing\_norm=none',    False),
    ('abl_AD_400M_sandwich_isoall',         'Sandwich 1G1x6E1G, iso-all',     False),
    ('abl_B_400M_6G1x6S',                   'Switch MoE, FLOP-matched',       True),
    ]),
- ('400M -- no recurrence (ACTIVE 238.0M, FLOPwt 238.0M)', [
+ ('400M|No recurrence (ACTIVE 238.0M, FLOPwt 238.0M)', [
    ('abl_H_400M_6G6E_deep',                'Deep 6G6E (energy MoE)',         False),
    ('abl_AB_400M_6G6E_deep_rnormnone',     r'Deep 6G6E, routing\_norm=none', False),
    ('abl_AC_6S6E_deep_allmoe_isoactive',   'Deep 6S6E, all-MoE',             False),
    ('abl_H_400M_6G6S_deep',                'Switch MoE, deep',               True),
    ]),
- ('1B -- no recurrence (ACTIVE 279.3M)', [
+ ('1B|No recurrence (ACTIVE 279.3M)', [
    ('cmix1B_12L_gptDense_32B',             'Stacked 8G4E (energy MoE)',      False),
    ]),
 ]
@@ -273,7 +273,8 @@ if not args.latex:
     print(f"  {'scale':6s} {'arm':34s} {'arch':12s} {'k/K':>6s} {'Act/Tot':>14s} {'FLOPwt':>8s} {'Avg11':>6s} {'ppl':>7s} {'MMLU':>6s} {'GSM8K':>6s} {'lm_loss':>8s} {'tokens':>8s}")
     for scale, rows in data:
         for r in rows:
-            print(f"  {scale:6s} {r['label']:34s} {r['arch']:12s} {r['kk']:>6s} "
+            _sz = scale.split("|")[0]
+            print(f"  {_sz:5s} {r['label']:34s} {r['arch']:12s} {r['kk']:>6s} "
                   f"{r['act']:6.0f}M/{r['tot_p']:5.0f}M {r['fw']:7.1f}M {fmt(r['avg11']):>6s} "
                   f"{fmt(r['ppl']):>7s} {fmt(r['mmlu']):>6s} {fmt(r['gsm']):>6s} {fmt(r['lml'],4):>8s} {r['tokens']:7.1f}B")
     print()
@@ -287,9 +288,19 @@ print(r"\resizebox{\textwidth}{!}{%")
 print(r"\begin{tabular}{llcrrrrrrr}")
 print(r"\toprule")
 print(r"Architecture & Blocks & $k/K$ & Active/Total & FLOPwt & \texttt{lm\_loss} & Avg11 \% & WikiPPL & MMLU & GSM8K \\")
+# Group labels are "SIZE|SUBGROUP". The SIZE header prints once per scale; each iso-compute
+# subgroup (Recurrent / No recurrence) gets an indented sub-header under it. Bolding is
+# WITHIN a subgroup, because only a subgroup is iso-ACTIVE and iso-FLOPwt -- a no-recurrence
+# arm has FLOPwt == ACTIVE identically and can never share the recurrent budget.
+_prev_size = None
 for gi, (scale, rows) in enumerate(data):
-    print(r"\midrule")
-    print(rf"\multicolumn{{10}}{{l}}{{\emph{{{scale}}}}} \\")
+    _size, _sub = (scale.split("|", 1) if "|" in scale else (scale, ""))
+    if _size != _prev_size:
+        print(r"\midrule")
+        print(rf"\multicolumn{{10}}{{l}}{{\textbf{{{_size}}}}} \\")
+        _prev_size = _size
+    if _sub:
+        print(rf"\multicolumn{{10}}{{l}}{{\quad\emph{{{_sub}}}}} \\")
     # A single-row group has no comparison to win, so nothing is bolded in it.
     cand = [r['avg11'] for r in rows if r['avg11'] is not None]
     best = max(cand) if len(cand) > 1 else None
