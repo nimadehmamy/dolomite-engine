@@ -7338,3 +7338,21 @@ after loading. Documented in measure_alignment_v3_20260925.py.
 ### 29.6 Running and planned
 
 Scale 2 (d=1024) and Scale 3 (d=1280) are running. See `configs/iclr_26/priority.md`.
+
+### 29.7 Token calculation formula (AUTHORITATIVE)
+
+```
+tokens = seq_length × micro_batch_size × gradient_accumulation × total_GPUs × num_train_steps
+```
+
+**GPUS IS NOT IN THE CONFIG.** Use `experiments/boltzmann-moe/scripts/compute_tokens.sh`.
+
+Found 2026-09-25: G3 (6S6E d=768) and G4 (6S6E d=1024) had ga=4 and ga=2 respectively
+when they should have had ga=8 and ga=4, giving them HALF the intended tokens (2.0B and
+3.8B instead of 4.0B and 7.6B). All d=1280 arms ran at ga=2 = 5.6B tokens = 0.8-0.9×
+Chinchilla (undertrained).
+
+Corrected 6S6E arms (G6/G7/G8) submitted with:
+- G6 d=768:  4GPU, ga=8, active=132M (iso-active with Switch E3), 4.0B tokens, 1.5× Chin
+- G7 d=1024: 8GPU, ga=4, active=225M (iso-active with Switch F3), 7.6B tokens, 1.7× Chin
+- G8 d=1280: 8GPU, ga=2, active=315M (iso-active with Switch H3), 5.6B tokens, 0.9× Chin
