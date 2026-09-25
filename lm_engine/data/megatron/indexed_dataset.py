@@ -154,6 +154,7 @@ class _IndexReader:
             assert header == _INDEX_HEADER, f"bad header, cannot read: {idx_path}"
 
             version = struct.unpack("<Q", stream.read(8))[0]
+            self._idx_version = version
             assert version in (1, 256), f"bad version {version}, cannot read: {idx_path}"
 
             code = struct.unpack("<B", stream.read(1))[0]
@@ -162,7 +163,7 @@ class _IndexReader:
 
             self.sequence_count = struct.unpack("<Q", stream.read(8))[0]
             _raw_doc_count = struct.unpack("<Q", stream.read(8))[0]
-            if version == 256:
+            if self._idx_version == 256:
                 # LLMB variant: field 5 is total_tokens, not document_count.
                 # In this format each sequence IS a document, so doc_count = seq_count.
                 # Compute the true doc count from the file size:
@@ -191,10 +192,11 @@ class _IndexReader:
 
         log_rank_0(logging.INFO, f"\tExtract the sequence pointers")
         t_beg = time.time()
+        _ptr_count = self.sequence_count + 1 if self._idx_version == 256 else self.sequence_count
         self.sequence_pointers = np.frombuffer(
             self.bin_buffer,
             dtype=np.int64,
-            count=self.sequence_count,
+            count=_ptr_count,
             offset=offset + self.sequence_lengths.nbytes,
         )
         t_end = time.time()
