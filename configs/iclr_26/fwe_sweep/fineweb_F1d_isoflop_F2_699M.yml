@@ -102,6 +102,7 @@ logging_args:
     name: fineweb_F1d_isoflop_F2_699M
 training_parameters:
   num_training_steps: 14567
+  # LAUNCH: 8 GPUs, tok/step=524288, total=7.64B tokens
   eval_interval: 5000
   micro_batch_size: 4
   gradient_accumulation_steps: 4
