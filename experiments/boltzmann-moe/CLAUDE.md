@@ -7,6 +7,15 @@
 > `configs/iclr_26/fwe_sweep/`). Do NOT create top-level config directories. This keeps
 > everything findable in one tree until the deadline passes.
 
+
+> ## ⚠ DATA NAMING: "fineweb" configs train on nemotron-cc, NOT FineWeb-Edu
+>
+> **All configs in `configs/iclr_26/fwe_sweep/` named `fineweb_*` actually train on
+> `web-nemotron-cc-hq-p2_0`** (granite-4 corpus, single web shard, 10.4B tokens).
+> FineWeb-Edu was the plan but its .idx format was incompatible (LLMB variant, patched
+> 2026-09-25). The names are historical. See `configs/iclr_26/DATA_NOTE.md` for details.
+> Comparisons within the sweep are valid (same data for all arms).
+
 > ## 🗄 THE RESCUED DATASET COPY IS A BIASED PREFIX — never compare loss across copies
 >
 > **Measured 2026-09-22 (HANDOFF §23).** `/proj/dmfexp/datasets-shared/granite-4-cmix-subset/` holds
