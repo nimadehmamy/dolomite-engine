@@ -2,7 +2,7 @@
 # Tests: does the data source matter? Compare with G3 (same arch, nemotron-cc data)
 datasets:
 - class_name: MegatronDataset
-  data_name: Megatron
+  data_name: FineWebEdu
   data_sampling_ratio: 1
   class_args:
     eval_steps: 2
