@@ -1,4 +1,4 @@
-# E2: w1w2 SPARSE K=8 k=2 iso-total 162M. Same total as E1; measures sparsity cost.
+# µP probe: d=384, lr=2e-3, 500 steps
 datasets:
 - class_name: MegatronDataset
   data_name: Megatron
@@ -26,7 +26,7 @@ model_args:
     normalization_function: rmsnorm
     position_embedding_type: rope
     rope_dim: 64
-    hidden_size: 768
+    hidden_size: 384
     num_layers: 7
     init_method: normal
     tie_word_embeddings: true
@@ -37,19 +37,19 @@ model_args:
     vocab_size: 100352
     max_position_embeddings: 4096
     sequence_mixer_blocks:
-    - &gpt_attn {sequence_mixer_type: softmax_attention, num_attention_heads: 12, num_key_value_heads: 12, add_bias: false, attention_multiplier: 0.125}
+    - &gpt_attn {sequence_mixer_type: softmax_attention, num_attention_heads: 6, num_key_value_heads: 6, add_bias: false, attention_multiplier: 0.125}
     - *gpt_attn
     - *gpt_attn
     - *gpt_attn
     - *gpt_attn
     - *gpt_attn
     - sequence_mixer_type: energy_attention
-      num_attention_heads: 12
-      num_key_value_heads: 12
+      num_attention_heads: 6
+      num_key_value_heads: 6
       add_bias: false
       attention_multiplier: 0.125
     mlp_blocks:
-    - &gpt_ffn {mlp_type: MLP, activation_function: swiglu, intermediate_size: 2048, add_bias: false}
+    - &gpt_ffn {mlp_type: MLP, activation_function: swiglu, intermediate_size: 1088, add_bias: false}
     - *gpt_ffn
     - *gpt_ffn
     - *gpt_ffn
@@ -57,50 +57,49 @@ model_args:
     - *gpt_ffn
     - mlp_type: EnergyFF_BoltzmannMoE
       expert_kind: w1w2
-      intermediate_size: 26888
+      intermediate_size: 13824
       n_experts: 8
+      top_k: 2
       temperature: 1.0
       e_sign_override: neg
       repulsion_coef: 0.1
       repulsion_form: abs
       repulsion_space: output
+      repulsion_subsample: 64
+      repulsion_tensor_idx: true
       n_repulsion_pairs: 4
-      repulsion_subsample: 0
       gelu_grad_method: sigmoid
-      activation_function: gelu
-      add_bias: false
-      top_k: 2
+      fused_experts: true
+      sparse_forward: true
+      sparse_start_step: 100
+      sparse_candidates: 2
+      sparse_explore: 2
+      proxy_loss_coef: 0.01
+      proxy_kind: subspace
+      proxy_rank: 16
+      proxy_out_dim: 512
       sinkhorn_iters: 3
       sinkhorn_persist_mu: true
       sinkhorn_mu_iters: 6
       renormalize_topk: true
       routing_norm: none
-      proxy_loss_coef: 0.01
-      proxy_kind: subspace
-      proxy_rank: 16
-      proxy_out_dim: 512
-      fused_experts: true
-      sparse_forward: true
-      sparse_start_step: 300
-      sparse_candidates: 2
-      sparse_explore: 0
-      repulsion_tensor_idx: true
-      repulsion_subsample: 64
+      activation_function: gelu
+      add_bias: false
 tuning_args:
   tuning_method: pretraining
 save_args:
-  save_path: /proj/dmfexp/nima/Code/dolomite-engine/experiments/boltzmann-moe/results/fwe/fineweb_E2_w1w2_sparse_K8
-  save_interval: 1000
-  max_to_keep: 2
+  save_path: /proj/dmfexp/nima/Code/dolomite-engine/experiments/boltzmann-moe/results/fwe/mup_probes/mup_d384_lr2e-3
+  save_interval: 10000
+  max_to_keep: 1
 logging_args:
   log_interval: 10
   experiments_tracker_name: wandb
   wandb_args:
     project: boltzmann-moe-fwe
-    name: fineweb_E2_w1w2_sparse_K8
+    name: mup_d384_lr2e-3
 training_parameters:
-  num_training_steps: 7629
-  eval_interval: 2000
+  num_training_steps: 500
+  eval_interval: 10000
   micro_batch_size: 4
   gradient_accumulation_steps: 4
   eval_during_training: false
@@ -115,9 +114,9 @@ optimizer_args:
 lr_scheduler_args:
   lr_decay_style: cosine
   lr_decay_factor: 0.1
-  num_warmup_steps: 500
+  num_warmup_steps: 50
   num_constant_steps: 0
-  num_decay_steps: 7129
+  num_decay_steps: 450
 mixed_precision_args:
   dtype: bf16
 distributed_args:
@@ -125,7 +124,3 @@ distributed_args:
   gradient_checkpointing_method: block
   torch_compile: true
   stage: 0
-load_args:
-  load_path: /proj/dmfexp/nima/Code/dolomite-engine/experiments/boltzmann-moe/results/fwe/fineweb_E2_w1w2_sparse_K8
-  load_lr_scheduler: false
-  load_rng_state: false

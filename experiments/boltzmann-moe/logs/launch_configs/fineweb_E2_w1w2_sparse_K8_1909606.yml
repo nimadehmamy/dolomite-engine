@@ -128,4 +128,3 @@ distributed_args:
 load_args:
   load_path: /proj/dmfexp/nima/Code/dolomite-engine/experiments/boltzmann-moe/results/fwe/fineweb_E2_w1w2_sparse_K8
   load_lr_scheduler: false
-  load_rng_state: false

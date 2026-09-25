@@ -151,7 +151,12 @@ class BaseModelMixin(PreTrainedModelMixin):
         # Only applies to blocks with energy_attention. Set 0.0 (default) to disable.
         self.energy_action_loss_coef = getattr(config, 'energy_action_loss_coef', 0.0)
 
+        # Step counter for alignment ramp (propagated via set_training_step).
+        self._align_step = 0
 
+    def set_training_step(self, step: int) -> None:
+        """Called from ModelWrapperForPretraining.set_training_step each step."""
+        self._align_step = step
 
     def _init_model(self, config: CommonConfig, **kwargs) -> None:
         self.embed_dim = config.hidden_size
@@ -353,6 +358,14 @@ class BaseModelMixin(PreTrainedModelMixin):
             #         cu_seqlens=cu_seqlens,
             #         max_seqlen=max_seqlen,
             #     )
+
+            # Cross-layer alignment regulariser (fires add_aux_loss internally).
+            # Reads align_coef etc. from config; no-op when align_coef <= 0.
+            # global_step for ramp: try self._align_step (propagated via
+            # set_training_step in the model wrapper), fall back to 0 (no ramp).
+            if self.training and getattr(self.config, 'align_coef', 0.0):
+                from ...modeling_utils.alignment_regularizer import apply_alignment_loss
+                apply_alignment_loss(self, global_step=getattr(self, '_align_step', 0))
 
             hidden_states = self.ln_f(hidden_states)
 

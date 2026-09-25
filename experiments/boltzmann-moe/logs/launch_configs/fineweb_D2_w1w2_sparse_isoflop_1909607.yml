@@ -1,4 +1,4 @@
-# E2: w1w2 SPARSE K=8 k=2 iso-total 162M. Same total as E1; measures sparsity cost.
+# D2: w1w2 SPARSE K=16 k=2 iso-FLOP 162M. More experts, matched compute with 12G.
 datasets:
 - class_name: MegatronDataset
   data_name: Megatron
@@ -57,8 +57,8 @@ model_args:
     - *gpt_ffn
     - mlp_type: EnergyFF_BoltzmannMoE
       expert_kind: w1w2
-      intermediate_size: 26888
-      n_experts: 8
+      intermediate_size: 30736
+      n_experts: 16
       temperature: 1.0
       e_sign_override: neg
       repulsion_coef: 0.1
@@ -89,7 +89,7 @@ model_args:
 tuning_args:
   tuning_method: pretraining
 save_args:
-  save_path: /proj/dmfexp/nima/Code/dolomite-engine/experiments/boltzmann-moe/results/fwe/fineweb_E2_w1w2_sparse_K8
+  save_path: /proj/dmfexp/nima/Code/dolomite-engine/experiments/boltzmann-moe/results/fwe/fineweb_D2_w1w2_sparse_isoflop
   save_interval: 1000
   max_to_keep: 2
 logging_args:
@@ -97,7 +97,7 @@ logging_args:
   experiments_tracker_name: wandb
   wandb_args:
     project: boltzmann-moe-fwe
-    name: fineweb_E2_w1w2_sparse_K8
+    name: fineweb_D2_w1w2_sparse_isoflop
 training_parameters:
   num_training_steps: 7629
   eval_interval: 2000
@@ -126,6 +126,5 @@ distributed_args:
   torch_compile: true
   stage: 0
 load_args:
-  load_path: /proj/dmfexp/nima/Code/dolomite-engine/experiments/boltzmann-moe/results/fwe/fineweb_E2_w1w2_sparse_K8
+  load_path: /proj/dmfexp/nima/Code/dolomite-engine/experiments/boltzmann-moe/results/fwe/fineweb_D2_w1w2_sparse_isoflop
   load_lr_scheduler: false
-  load_rng_state: false

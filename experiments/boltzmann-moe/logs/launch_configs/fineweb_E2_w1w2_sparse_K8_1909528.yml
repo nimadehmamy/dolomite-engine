@@ -83,7 +83,7 @@ model_args:
       sparse_forward: true
       sparse_start_step: 300
       sparse_candidates: 2
-      sparse_explore: 0
+      sparse_explore: 2
       repulsion_tensor_idx: true
       repulsion_subsample: 64
 tuning_args:
@@ -125,7 +125,3 @@ distributed_args:
   gradient_checkpointing_method: block
   torch_compile: true
   stage: 0
-load_args:
-  load_path: /proj/dmfexp/nima/Code/dolomite-engine/experiments/boltzmann-moe/results/fwe/fineweb_E2_w1w2_sparse_K8
-  load_lr_scheduler: false
-  load_rng_state: false
