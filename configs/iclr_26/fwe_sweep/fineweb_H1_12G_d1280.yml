@@ -76,6 +76,7 @@ logging_args:
     name: fineweb_H1_12G_d1280
 training_parameters:
   num_training_steps: 21435
+  # LAUNCH: 8 GPUs, tok/step=262144, total=5.62B tokens
   eval_interval: 5000
   micro_batch_size: 4
   gradient_accumulation_steps: 2

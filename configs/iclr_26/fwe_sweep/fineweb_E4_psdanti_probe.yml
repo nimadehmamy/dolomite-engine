@@ -85,6 +85,7 @@ logging_args:
     name: fineweb_E4_psdanti_probe
 training_parameters:
   num_training_steps: 1907
+  # LAUNCH: 4 GPUs, tok/step=524288, total=1.00B tokens
   eval_interval: 2000
   micro_batch_size: 4
   gradient_accumulation_steps: 8

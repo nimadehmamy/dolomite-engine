@@ -80,6 +80,7 @@ logging_args:
     name: fineweb_F3_6G1x6S_switch_K8_d1024
 training_parameters:
   num_training_steps: 14567
+  # LAUNCH: 8 GPUs, tok/step=524288, total=7.64B tokens
   eval_interval: 5000
   micro_batch_size: 4
   gradient_accumulation_steps: 4

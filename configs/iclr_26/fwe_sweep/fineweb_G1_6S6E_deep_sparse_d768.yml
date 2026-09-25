@@ -109,6 +109,7 @@ logging_args:
     name: fineweb_G1_6S6E_deep_sparse_d768
 training_parameters:
   num_training_steps: 7629
+  # LAUNCH: 4 GPUs, tok/step=524288, total=4.00B tokens
   eval_interval: 2000
   micro_batch_size: 4
   gradient_accumulation_steps: 8
