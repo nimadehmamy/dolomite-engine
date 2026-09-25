@@ -147,6 +147,7 @@ class _IndexReader:
     """
 
     def __init__(self, idx_path: str, multimodal: bool) -> _IndexReader:
+        import sys; print(f'INDEXED_DATASET LOADED FROM: {__file__}', file=sys.stderr, flush=True)
         log_rank_0(logging.INFO, f"Load the {type(self).__name__} from {idx_path}")
 
         with open(idx_path, "rb") as stream:
@@ -163,19 +164,20 @@ class _IndexReader:
 
             self.sequence_count = struct.unpack("<Q", stream.read(8))[0]
             _raw_doc_count = struct.unpack("<Q", stream.read(8))[0]
-            if self._idx_version == 256:
-                # LLMB variant: field 5 is total_tokens, not document_count.
-                # In this format each sequence IS a document, so doc_count = seq_count.
-                # Compute the true doc count from the file size:
+            if _raw_doc_count > self.sequence_count * 10:
+                # LLMB variant: the 'document_count' field actually holds total_tokens.
+                # Detect by: doc_count >> seq_count (documents can't exceed sequences).
+                # Compute true doc count from file size:
                 #   file = header(34) + sizes(N*4) + pointers((N+1)*8) + doc_indices(M*8)
-                #   M = (file_size - 34 - N*12 - 8) / 8
                 import os as _os
                 _fsize = _os.path.getsize(idx_path)
-                _data_after_ptrs = _fsize - 34 - self.sequence_count * 4 - (self.sequence_count + 1) * 8
+                _data_after_ptrs = _fsize - stream.tell() - self.sequence_count * 4 - (self.sequence_count + 1) * 8
                 self.document_count = _data_after_ptrs // 8
-                log_rank_0(logging.INFO, f"	LLMB format: seq_count={self.sequence_count}, doc_count={self.document_count} (field was total_tokens={_raw_doc_count})")
+                self._is_llmb = True
+                log_rank_0(logging.INFO, f"	LLMB format detected: seq_count={self.sequence_count}, doc_count={self.document_count} (field was total_tokens={_raw_doc_count})")
             else:
                 self.document_count = _raw_doc_count
+                self._is_llmb = False
 
             offset = stream.tell()
 
@@ -192,7 +194,7 @@ class _IndexReader:
 
         log_rank_0(logging.INFO, f"\tExtract the sequence pointers")
         t_beg = time.time()
-        _ptr_count = self.sequence_count + 1 if self._idx_version == 256 else self.sequence_count
+        _ptr_count = self.sequence_count + 1 if self._is_llmb else self.sequence_count
         self.sequence_pointers = np.frombuffer(
             self.bin_buffer,
             dtype=np.int64,
